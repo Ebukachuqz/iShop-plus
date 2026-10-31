@@ -64,7 +64,7 @@ export default function Index() {
     <s-page heading="iShop-plus">
       <s-section heading="Drake provider settings">
         <s-paragraph>
-          ElevenLabs powers Drake's voice. One model handles conversation, photos, and shopping goals.
+          ElevenLabs powers Drake&apos;s voice. One model handles conversation, photos, and shopping goals.
           Changes apply to new shopper sessions.
         </s-paragraph>
         {result?.message ? <p role="status">{result.message}</p> : null}

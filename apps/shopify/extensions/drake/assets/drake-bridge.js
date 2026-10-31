@@ -201,7 +201,6 @@ export class StorefrontBridge {
 
     // 1. Dispatch mutation according to preferred transport
     let mutationResult = null;
-    let writeUncertain = false;
 
     try {
       if (transport === 'native_webmcp') {
@@ -212,7 +211,6 @@ export class StorefrontBridge {
         mutationResult = await this._dispatchAjax(command);
       }
     } catch (err) {
-      writeUncertain = true;
       // S-10 & T-16: A failed or uncertain write must NEVER be blindly retried on a fallback adapter!
       const liveAfter = await this.readAuthoritativeCart();
       return {

@@ -17,6 +17,10 @@ vi.mock("./merchant-config.server", () => ({
 import { authenticate } from "./shopify.server";
 import { getConfigurationSnapshot } from "./merchant-config.server";
 
+function loadRequest(request: Request) {
+  return loader({ request, url: new URL(request.url), pattern: "/proxy/bootstrap", params: {}, context: {} });
+}
+
 describe("proxy.bootstrap loader with mocked Shopify authentication", () => {
   const originalEnv = { ...process.env };
   const mockAppProxy = authenticate.public.appProxy as unknown as ReturnType<typeof vi.fn>;
@@ -43,7 +47,7 @@ describe("proxy.bootstrap loader with mocked Shopify authentication", () => {
   test("returns 401 when Shopify app proxy session is missing or inactive", async () => {
     mockAppProxy.mockResolvedValueOnce({ session: null });
     const request = new Request("https://shop.example.com/proxy/bootstrap?origin=https://shop.example.com");
-    const response = await loader({ request } as any);
+    const response = await loadRequest(request);
     expect(response.status).toBe(401);
     const data = await response.json();
     expect(data.error).toBe("App installation is not active");
@@ -54,24 +58,24 @@ describe("proxy.bootstrap loader with mocked Shopify authentication", () => {
 
     // Missing origin
     const req1 = new Request("https://shop.example.com/proxy/bootstrap");
-    const res1 = await loader({ request: req1 } as any);
+    const res1 = await loadRequest(req1);
     expect(res1.status).toBe(403);
 
     // Wildcard origin
     const req2 = new Request("https://shop.example.com/proxy/bootstrap?origin=*");
-    const res2 = await loader({ request: req2 } as any);
+    const res2 = await loadRequest(req2);
     expect(res2.status).toBe(403);
 
     // Unapproved external origin
     const req3 = new Request("https://shop.example.com/proxy/bootstrap?origin=https://malicious-site.com");
-    const res3 = await loader({ request: req3 } as any);
+    const res3 = await loadRequest(req3);
     expect(res3.status).toBe(403);
   });
 
   test("generates and returns valid signed session grant on approved origin", async () => {
     mockAppProxy.mockResolvedValueOnce({ session: { shop: "example-shop.myshopify.com" } });
     const request = new Request("https://shop.example.com/proxy/bootstrap?origin=https://example-shop.myshopify.com");
-    const response = await loader({ request } as any);
+    const response = await loadRequest(request);
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data.grant).toBeDefined();
@@ -87,7 +91,7 @@ describe("proxy.bootstrap loader with mocked Shopify authentication", () => {
 
     const resumedRequest = new Request(`https://shop.example.com/proxy/bootstrap?origin=https://example-shop.myshopify.com&resume=${encodeURIComponent(data.resume_reference)}`);
     mockAppProxy.mockResolvedValueOnce({ session: { shop: "example-shop.myshopify.com" } });
-    const resumed = await (await loader({ request: resumedRequest } as any)).json();
+    const resumed = await (await loadRequest(resumedRequest)).json();
     expect(resumed.grant.anonymous_session_id).toBe(data.grant.anonymous_session_id);
   });
 });

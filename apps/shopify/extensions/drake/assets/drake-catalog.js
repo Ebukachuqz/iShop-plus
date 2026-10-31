@@ -317,6 +317,7 @@ export class StorefrontCatalog {
         const products = await this.webMcp.search(query, limit);
         if (products.length) return { source: 'native_webmcp', products };
       } catch (_) {
+        // Read-only provider lookup failed; use the Ajax catalog below.
       }
     }
     return { source: 'ajax_product_json', products: await this.ajax.search(query, limit) };
@@ -328,6 +329,7 @@ export class StorefrontCatalog {
         const product = await this.webMcp.getByHandle(handle);
         if (product) return product;
       } catch (_) {
+        // Read-only provider lookup failed; use the Ajax product lookup below.
       }
     }
     return this.ajax.getByHandle(handle);
@@ -363,18 +365,18 @@ export class StorefrontCatalog {
         if (!product && reference && !/^\d+$/.test(reference) && !reference.startsWith('gid://')) {
           try {
             product = await this.getByHandle(reference);
-          } catch (_) {}
+          } catch (_) { /* A title may not be a handle; try current-page evidence next. */ }
         }
         if (!product && page.currentProductHandle && (!reference || reference === String(page.currentProductId) || reference.toLowerCase() === page.currentProductHandle.toLowerCase())) {
           try {
             product = await this.getByHandle(page.currentProductHandle);
-          } catch (_) {}
+          } catch (_) { /* Current-page lookup failed; try an exact title search next. */ }
         }
         if (!product && reference && !/^\d+$/.test(reference) && !reference.startsWith('gid://')) {
           try {
             const searchResults = await this.search(reference, 8);
             product = searchResults.products.find((item) => item.title.toLowerCase() === reference.toLowerCase()) || null;
-          } catch (_) {}
+          } catch (_) { /* No verified match; return the empty observation below. */ }
         }
         return { tool: name, ok: true, source: 'storefront_product', data: { products: product ? [product] : [], coverage: product ? 'exact' : 'none' }, observed_at_ms: observedAt };
       }
