@@ -9,7 +9,7 @@
     completed: "Cart update verified", reconnecting: "Reconnecting", failed: "Something went wrong",
   };
   const ACTIVITY_LABELS = {
-    idle: "Ready when you are", listening: "Listening…", transcribing: "Understanding your voice…",
+    routing: "Understanding your request…", idle: "Ready when you are", listening: "Listening…", transcribing: "Understanding your voice…",
     "vision.analyzing": "Understanding your photo…", "vision.searching": "Searching available products…",
     "vision.ranking": "Comparing matches…", "mission.planning": "Planning your shopping list…",
     "mission.researching": "Researching products in your store…", "mission.validating": "Checking prices and budget…",
@@ -231,20 +231,16 @@
         this.error,
       );
       this.featureControls = element("div", "drake-features");
-      this.featureControls.setAttribute("aria-label", "Shopping modes");
-      this.shopModeButton = element("button", "drake-feature", "Chat");
+      this.featureControls.setAttribute("aria-label", "Message attachments");
       this.visionButton = element("button", "drake-feature", "＋ Photo");
-      this.missionButton = element("button", "drake-feature", "Missions");
-      for (const button of [this.shopModeButton, this.visionButton, this.missionButton]) button.type = "button";
-      this.shopModeButton.setAttribute("aria-pressed", "true");
-      this.missionButton.setAttribute("aria-pressed", "false");
+      this.visionButton.type = "button";
       this.visionButton.setAttribute("aria-pressed", "false");
       this.imageInput = element("input", "drake-image-input");
       this.imageInput.type = "file";
       this.imageInput.accept = "image/jpeg,image/png,image/webp";
       this.imageInput.setAttribute("aria-label", "Attach a product photo for Vision");
       this.imageInput.hidden = true;
-      this.featureControls.append(this.shopModeButton, this.visionButton, this.missionButton, this.imageInput);
+      this.featureControls.append(this.visionButton, this.imageInput);
       this.attachment = element("div", "drake-attachment");
       this.attachment.hidden = true;
       this.attachmentImage = element("img", "drake-attachment__preview");
@@ -303,9 +299,7 @@
       this.stopButton.addEventListener("click", () => this.finishListening());
       this.conversationButton.addEventListener("click", () => this.startConversation());
       this.endConversationButton.addEventListener("click", () => this.endConversation());
-      this.shopModeButton.addEventListener("click", () => this.setPlusMode("shop"));
       this.visionButton.addEventListener("click", () => this.imageInput.click());
-      this.missionButton.addEventListener("click", () => this.setPlusMode(this.plusMode === "mission" ? "shop" : "mission"));
       this.imageInput.addEventListener("change", () => this.selectImage(this.imageInput.files?.[0]));
       this.removeImageButton.addEventListener("click", () => this.clearImage());
       if (typeof document.addEventListener === "function") document.addEventListener("visibilitychange", () => {
@@ -465,7 +459,7 @@
       this.addMessage("shopper", text);
       this.state.acceptFinal(text);
       if (this.handleBrowserControl(text)) return;
-      if (this.shouldUsePlus?.(text)) { await this.submitPlusRequest(text); return; }
+      if (this.client?.sendPlusRequest) { await this.submitPlusRequest(text); return; }
       if (this.plusResultsVisible) await this.submitLegacyShoppingRequest(text);
       else await this.submitShoppingRequest(text);
     }
@@ -488,7 +482,7 @@
         this.caption.textContent = "";
         this.addMessage("shopper", finalText);
         if (this.handleBrowserControl(finalText)) return;
-        if (this.shouldUsePlus?.(finalText)) { this.submitPlusRequest(finalText); return; }
+        if (this.client?.sendPlusRequest) { this.submitPlusRequest(finalText); return; }
         if (this.plusResultsVisible) this.submitLegacyShoppingRequest(finalText);
         else this.submitShoppingRequest(finalText);
       } else if (event.type === "error") {
@@ -588,7 +582,7 @@
     }
 
     setActivity(stage, label = null) {
-      this.root.dataset.activity = stage === "listening" ? "listening" : stage === "error" ? "error" : /^(vision|mission|cart)\./.test(stage) ? "working" : "idle";
+      this.root.dataset.activity = stage === "listening" ? "listening" : stage === "error" ? "error" : (stage === "routing" || /^(vision|mission|cart)\./.test(stage)) ? "working" : "idle";
       if (ACTIVITY_LABELS[stage]) {
         this.statusBeforeSpeaking = typeof label === "string" && label.length <= 160 ? label.replace(/[\r\n]/g, " ") : ACTIVITY_LABELS[stage];
         this.statusText.textContent = this.root.dataset.audioState === "speaking" ? ACTIVITY_LABELS.speaking : this.statusBeforeSpeaking;
@@ -599,12 +593,8 @@
       if (this.plusMissionExecuting || this.plusBusy) return;
       if (mode === "mission" && this.plusMode !== "mission") this.missionReady = false;
       this.plusMode = ["shop", "vision", "mission"].includes(mode) ? mode : "shop";
-      this.shopModeButton.setAttribute("aria-pressed", String(this.plusMode === "shop"));
       this.visionButton.setAttribute("aria-pressed", String(this.plusMode === "vision"));
-      this.missionButton.setAttribute("aria-pressed", String(this.plusMode === "mission"));
-      this.textInput.placeholder = this.plusMode === "mission"
-        ? "List 2–3 items and your total budget"
-        : this.plusMode === "vision" ? "Add a color, budget, or other preference" : "Ask Drake to find something";
+      this.textInput.placeholder = this.selectedImage ? "Describe what you want from this photo" : "Ask Drake to find something";
       this.textInput.focus();
     }
 
@@ -643,25 +633,15 @@
       if (!keepMode && !this.visionReady) this.setPlusMode("shop");
     }
 
-    shouldUsePlus(text) {
-      if (!this.selectedImage && !this.plusBusy && ["vision", "mission"].includes(this.plusMode)) {
-        const negative = /\b(?:stop|cancel|reject)\b|(?:don't|don’t|do not)\s+add/i.test(text);
-        const ordinaryAction = /\b(?:open|view|take me to|show (?:me )?(?:my |the )?cart|what.*(?:in|inside).*cart|checkout|check out|go home|go back)\b/i.test(text)
-          || (this.plusMode === "vision" && /\b(?:add|remove|reduce|increase|cart)\b/i.test(text));
-        if (ordinaryAction && !negative) return false;
-      }
-      if (this.selectedImage || this.plusMode === "vision" || this.plusMode === "mission") return true;
-      if (/\b(?:shopping mission|mission:|put together|assemble (?:a |my )?(?:setup|basket|kit)|build (?:me )?(?:a |my )?(?:setup|kit|basket|home.office|desk setup))\b/i.test(text)) {
-        this.setPlusMode("mission");
-        return true;
-      }
-      return false;
-    }
-
     async submitLegacyShoppingRequest(text) {
       // Visible Vision cards own their displayed positions. Resolve these locally
       // before handing the normal action to the existing trusted shopping flow.
       let groundedText = text;
+      if (this.selectedRecommendation && /\b(?:this|that|it|selected)\b/i.test(text) && !/\bcart\b/i.test(text)) {
+        const variant = this.selectedRecommendationVariant;
+        const options = variant ? Object.entries(variant.selected_options || {}).map(([k,v]) => `${k}: ${v}`).join(", ") : "";
+        groundedText += ` (Selected product: ${this.selectedRecommendation.title}${options ? `; selected option: ${options}` : ""}.)`;
+      }
       if (!/\bcart\b/i.test(text)) {
         const match = String(text).match(/\b(?:the\s+)?(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\s+(?:one|product|item|result)\b/i);
         const indices = { first: 0, second: 1, third: 2, fourth: 3, fifth: 4, '1st': 0, '2nd': 1, '3rd': 2, '4th': 3, '5th': 4 };
@@ -693,13 +673,8 @@
         this.addMessage("assistant", "Please let this request finish before starting another. Cart approval is a separate step.");
         return;
       }
-      if (this.plusMode === "vision" && !this.selectedImage && !this.visionReady) {
-        this.addMessage("assistant", "Attach a product photo first, then tell me your preferences.");
-        this.setState("ready");
-        return;
-      }
-      const missionRefinement = this.plusMode === "mission" && this.missionReady && !/\bnew mission\b/i.test(text);
-      const feature = this.selectedImage ? "vision" : this.plusMode === "mission" ? (missionRefinement ? "refine" : "mission") : "refine";
+      const feature = this.selectedImage ? "vision" : "route";
+      this.pendingRoutedText = text;
       const image = this.selectedImage;
       if (this.plusMode === "mission") {
         this.missionProposal = null;
@@ -708,7 +683,7 @@
       try {
         await this.sendPlusPayload({ feature, text, ...(image ? { image } : {}) });
         if (image) this.clearImage(true);
-        this.setActivity(feature === "mission" ? "mission.planning" : "vision.analyzing");
+        this.setActivity(image ? "vision.analyzing" : "routing");
       } catch (_) {
         this.plusBusy = false;
         this.setState("failed", { error: "Drake could not start this request. Please reconnect and try again." });
@@ -726,7 +701,15 @@
       this.plusBusy = true;
       this.setState("interpreting");
       this.client.sendPlusRequest({
-        ...payload, request_id: requestId, page_epoch: this.pageEpoch,
+        ...payload,
+        conversation_context: this.messageHistory.slice(-12),
+        page_context: this.pageContext,
+        selected_product: this.selectedRecommendation ? {
+          product_id: this.selectedRecommendation.product_id,
+          title: this.selectedRecommendation.title,
+          variant: this.selectedRecommendationVariant || null,
+        } : null,
+        request_id: requestId, page_epoch: this.pageEpoch,
         request_revision: this.client.revision, currency: window.Shopify?.currency?.active || "USD",
         shop_id: this.root.dataset.shopDomain || location.host, observed_at_ms: Date.now(),
       });
@@ -807,6 +790,12 @@
       if (event.request_id && event.request_id !== this.plusRequestId) return;
       if (event.type === "plus_activity") { this.setActivity(event.stage, event.label); return; }
       if (event.type === "plus_catalog_request") { this.retrievePlusCatalog(event); return; }
+      if (event.type === "plus_route" && event.route === "shopping") {
+        this.plusBusy = false;
+        if (this.plusResultsVisible) this.submitLegacyShoppingRequest(this.pendingRoutedText);
+        else this.submitShoppingRequest(this.pendingRoutedText);
+        return;
+      }
       if (event.type !== "plus_result") return;
       const message = event.message || event.spoken_response;
       if (message) this.addMessage("assistant", message);
@@ -819,6 +808,7 @@
         if (["vision", "refine"].includes(event.feature) && event.status !== "error") this.visionReady = true;
       }
       if (event.proposal) {
+        this.conversation.insertBefore(this.proposalPanel, this.caption);
         this.missionProposal = event.proposal;
         this.renderMissionProposal(event.proposal);
         if (event.status === "executing") {
@@ -906,7 +896,10 @@
 
     renderProducts(products, query = null) {
       this.candidates = new CandidateSet(products);
+      this.selectedRecommendation = null;
+      this.selectedRecommendationVariant = null;
       this.cards.replaceChildren();
+      this.conversation.insertBefore(this.cards, this.caption);
       this.candidates.products.forEach((product, index) => {
         const card = element("article", "drake-card");
         if (product.image_url) {
@@ -922,25 +915,78 @@
         }
         card.append(element("h3", "drake-card__title", `${index + 1}. ${product.title}`));
         if (product.match_reason) card.append(element("p", "drake-card__variant", product.match_reason));
-        (product.variants || []).slice(0, 3).forEach((variant) => {
+        (product.variants || []).forEach((variant) => {
           const options = Object.entries(variant.selected_options || {}).map(([key, value]) => `${key}: ${value}`).join(" · ");
           const price = variant.price ? `${variant.price.amount} ${variant.price.currency}` : "Price unavailable";
           card.append(element("p", "drake-card__variant", `${variant.variant_title || "Standard"} · ${price}${options ? ` · ${options}` : ""}`));
         });
-        const choose = element("button", "drake-card__choose", `Choose ${index + 1}`);
+        const choose = element("button", "drake-card__choose", "Choose options");
         choose.type = "button";
-        choose.addEventListener("click", () => {
-          this.setPlusMode("shop");
-          this.textInput.value = product.title;
-          this.textInput.focus();
+        const selection = element("div", "drake-card__selection");
+        selection.hidden = true;
+        const variantLabel = element("label", "drake-card__variant", "Option ");
+        const variants = element("select", "drake-variant-select");
+        variants.setAttribute("aria-label", `Option for ${product.title}`);
+        const placeholder = element("option", "", "Choose an option");
+        placeholder.value = "";
+        variants.append(placeholder);
+        for (const variant of product.variants || []) {
+          const option = element("option", "", `${variant.variant_title || "Standard"} — ${variant.price?.amount || ""} ${variant.price?.currency || ""}`);
+          option.value = String(variant.variant_id);
+          option.disabled = variant.available_for_sale !== true;
+          variants.append(option);
+        }
+        variantLabel.append(variants);
+        const quantityLabel = element("label", "drake-card__variant", "Quantity ");
+        const quantity = element("input", "drake-quantity-input");
+        quantity.type = "number"; quantity.min = "1"; quantity.max = "5"; quantity.step = "1"; quantity.value = "1";
+        quantity.setAttribute("aria-label", `Quantity for ${product.title}`);
+        quantityLabel.append(quantity);
+        const prepare = element("button", "drake-card__prepare", "Review addition");
+        prepare.type = "button"; prepare.disabled = true;
+        let openLink = null;
+        variants.addEventListener("change", () => {
+          this.selectedRecommendationVariant = (product.variants || []).find(v => String(v.variant_id) === variants.value) || null;
+          prepare.disabled = !this.selectedRecommendationVariant;
+          if (openLink) {
+            const destination = new URL(openLink.href);
+            if (this.selectedRecommendationVariant) destination.searchParams.set("variant", variants.value);
+            else destination.searchParams.delete("variant");
+            openLink.href = destination.toString();
+          }
         });
-        card.append(choose);
+        prepare.addEventListener("click", async () => {
+          const variant = (product.variants || []).find(v => String(v.variant_id) === variants.value);
+          if (!variant || variant.available_for_sale !== true || this.plusBusy) return;
+          const count = Number(quantity.value);
+          if (!Number.isInteger(count) || count < 1 || count > 5) { quantity.reportValidity?.(); return; }
+          prepare.disabled = true;
+          try {
+            const fresh = await this.catalog.getByHandle(product.handle);
+            this.addMessage("shopper", `Review ${count} × ${product.title}, ${variant.variant_title || "Standard"}, for my cart.`);
+            await this.sendPlusPayload({feature: "select_product", product_id: String(product.product_id),
+              variant_id: String(variant.variant_id), quantity: count, products: [fresh]});
+          } catch (_) { this.plusBusy = false; this.setState("failed", {error: "I couldn’t refresh that option. Please try again."}); }
+          finally { prepare.disabled = false; }
+        });
+        selection.append(variantLabel, quantityLabel, prepare);
+        choose.addEventListener("click", () => {
+          this.selectedRecommendation = product;
+          this.selectedRecommendationVariant = null;
+          variants.value = ""; prepare.disabled = true;
+          selection.hidden = false;
+          this.setState("ready");
+          this.addMessage("assistant", `Selected ${product.title}. Choose an option on this card, or tell me what you would like to do with it.`);
+          variants.focus();
+        });
+        card.append(choose, selection);
         try {
           const path = product.handle ? `/products/${encodeURIComponent(product.handle)}` : product.url;
           const destination = new URL(path, location.origin);
           if (path && destination.origin === location.origin && /^\/(?:[a-z]{2}(?:-[A-Z]{2})?\/)?products\//.test(destination.pathname)) {
             const link = element("a", "drake-card__open", "Open product");
             link.href = destination.toString();
+            openLink = link;
             link.addEventListener("click", () => { this.navigationInProgress = true; });
             card.append(link);
           }

@@ -185,3 +185,15 @@
   #ishop-drake-root .drake-panel { height: calc(100dvh - 6.25rem); min-height: min(24rem, calc(100dvh - 6.25rem)); }
 }
 #ishop-drake-root[data-activity='error'] .drake-orb { animation: none; }
+
+#ishop-drake-root .drake-card .drake-card__title { color: #f1f2ff; line-height: 1.4; }
+#ishop-drake-root .drake-card__selection { margin-top: .6rem; }
+#ishop-drake-root .drake-card__selection label { display: block; margin: .5rem 0; color: #d8dcec; }
+#ishop-drake-root .drake-variant-select, #ishop-drake-root .drake-quantity-input {
+  color: #f1f2ff; background: #11182c; border: 1px solid #8873bf; border-radius: .4rem;
+  padding: .5rem; max-width: 100%; font: inherit;
+}
+#ishop-drake-root .drake-quantity-input { width: 4rem; }
+#ishop-drake-root .drake-card__prepare { color: #fff; background: #673dcc; border: 0;
+  border-radius: .5rem; padding: .6rem; cursor: pointer; }
+#ishop-drake-root .drake-card__prepare:disabled { opacity: .5; cursor: default; }

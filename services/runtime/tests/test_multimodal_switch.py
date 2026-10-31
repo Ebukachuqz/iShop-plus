@@ -41,6 +41,7 @@ def test_groq_image_request_uses_own_wire_and_bounded_output(monkeypatch):
     assert r.get_header("User-agent") == "iShop-plus/0.1"
     assert body["model"] == "qwen/qwen3.8-27b"
     assert body["max_completion_tokens"] == 768
+    assert body["temperature"] == 0
     assert body["response_format"] == {"type": "json_object"}
     assert "provider" not in body and "reasoning" not in body
     assert body["messages"][0]["content"][1]["image_url"]["url"].startswith(

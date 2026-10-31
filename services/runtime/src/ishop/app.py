@@ -14,9 +14,8 @@ from ishop.domain.models import CartSnapshot, Money
 from ishop.domain.intent import IntentOperation, ShoppingIntent
 from ishop.domain.session_store import SessionStore
 from ishop.domain.journal import CommandJournal
-from ishop.llm.gemini import GeminiLlmProvider
-from ishop.llm.groq import GroqLlmProvider
-from ishop.llm.base import GroundedResponseContext, LlmProvider, LlmRegistry
+from ishop.llm.multimodal import MultimodalLlmProvider
+from ishop.llm.base import GroundedResponseContext, LlmProvider
 from ishop.orchestration.controller import ControllerTurnResult, ShoppingController
 from ishop.speech import (
     AssemblyAiStreamingSession,
@@ -41,20 +40,15 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
         "elevenlabs-scribe-v2-realtime": lambda **kwargs: ElevenLabsScribeRealtimeSession(api_key=active.elevenlabs_api_key or "", **kwargs),
     }
 
-    llm_registry = LlmRegistry()
-    # Profile IDs are stable merchant-facing identifiers. The Gemini adapter's
-    # model can advance independently through GEMINI_MODEL after validation.
-    llm_registry.register(GeminiLlmProvider(api_key=active.gemini_api_key), set_active=True)
-    llm_registry.register(GroqLlmProvider(api_key=active.groq_api_key))
-
     def selected_llm_provider(grant: Any) -> LlmProvider | None:
-        """Resolve only the profile authorized by the signed merchant grant."""
-        profile_id, _ = split_reasoning_profile(getattr(grant, "llm_profile_id", ""))
-        provider = llm_registry.get(profile_id)
-        if provider is None:
-            return None
-        ready, _ = provider.check_readiness()
-        return provider if ready else None
+        # One signed model choice powers routing, images, research and chat.
+        workflow = selected_plus_workflow(grant)
+        key = str(getattr(grant, "llm_profile_id", ""))
+        provider = MultimodalLlmProvider(
+            workflow.model, key,
+            context_provider=lambda: workflow.sessions.get((grant.shop_id, grant.anonymous_session_id)),
+        )
+        return provider if provider.check_readiness()[0] else None
     tts_registry = create_default_tts_registry(
         sahara_api_key=active.sahara_api_key,
         elevenlabs_api_key=active.elevenlabs_api_key or "",

@@ -16,7 +16,7 @@ from ishop.domain.journal import CommandJournal
 from ishop.domain.models import CartSnapshot, SessionGrant
 from ishop.domain.session_store import SessionStore
 from ishop.llm.fake import FakeLlmProvider
-from ishop.plus import PlusWorkflow, VisionSpec, MissionSpec, AgentChoice
+from ishop.plus import PlusWorkflow, VisionSpec, MissionSpec, AgentChoice, WorkflowRoute
 from ishop.orchestration.controller import ShoppingController
 from ishop.transport.websocket import create_voice_app
 
@@ -92,14 +92,19 @@ async def shopping_turn(payload: dict[str, Any], grant: SessionGrant) -> dict[st
 class FixturePlusModel:
     """Deliberately synthetic model; production Plus workflow/transport/bridge remain real."""
     async def generate(self, prompt, schema, image=None):
+        if schema is WorkflowRoute:
+            text = prompt.split("Current request: ")[-1].lower()
+            return WorkflowRoute(route="mission" if any(x in text for x in ("three-board", "three boards", "keyboard and mouse")) else "refine" if any(x in text for x in ("only", "all colors")) else "shopping")
         if schema is VisionSpec:
-            return VisionSpec(query="snowboard", currency="USD", required_options={"Color": "Ice"})
+            return VisionSpec(query="snowboard", currency="USD", required_options={} if "all colors" in prompt.lower() else {"Color": "Ice"})
         if schema is MissionSpec:
             return MissionSpec(goal="Three board test basket", budget="2500", currency="USD", tasks=[
                 {"category": "Complete", "query": "complete snowboard", "required_options": {"Color": "Ice"}},
                 {"category": "Multi-location", "query": "multi-location snowboard"},
                 {"category": "Multi-managed", "query": "multi-managed snowboard"}])
         if schema is AgentChoice:
+            if prompt.startswith("Rank approximate"):
+                return AgentChoice(variant_ids=["101", "102"])
             variant = "201" if "research_2" in prompt else "301" if "research_3" in prompt else "101"
             return AgentChoice(variant_ids=[variant])
         raise AssertionError("Unexpected fixture schema")
@@ -129,7 +134,7 @@ def storefront_page(*, product: bool = False, search_products: list[tuple[str, s
         cards = "".join(f'<li class="grid__item"><a href="/products/{handle}">{title}</a><a aria-hidden="true" href="/products/{handle}">image</a></li>'
                         for handle, title in search_products)
         search_grid = f'<main><ul id="product-grid" data-native-search-results>{cards}</ul></main>'
-    return HTMLResponse(f"""<!doctype html><html><body>
+    return HTMLResponse(f"""<!doctype html><html><head><link rel="stylesheet" href="/assets/drake-bootstrap.css"></head><body>
 <a id="cart-icon-bubble" href="/cart"><span class="visually-hidden">Cart</span></a>
 <button type="button" data-cart-drawer-trigger aria-controls="CartDrawer">Open cart drawer</button>
 <cart-drawer id="CartDrawer" hidden aria-hidden="true"></cart-drawer>

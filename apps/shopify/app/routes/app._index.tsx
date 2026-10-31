@@ -16,7 +16,7 @@ import { authenticate } from "../shopify.server";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const configuration = await getMerchantConfiguration(session.shop);
-  return { configuration, profiles: profilesForBrowser(), plusProfiles: plusProviderProfiles(), defaults: DEFAULT_SELECTION };
+  return { configuration, profiles: profilesForBrowser(), plusProfiles: plusProviderProfiles().filter(p => p.id !== "default"), defaultModel: process.env.ISHOP_PLUS_GEMMA_PROVIDER || "google", defaults: DEFAULT_SELECTION };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -24,7 +24,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const form = await request.formData();
   const selection: Record<ProviderRole, string> = {
     asr: String(form.get("asr") ?? ""),
-    llm: combineReasoningProfile(String(form.get("llm") ?? ""), String(form.get("plus") ?? "default")),
+    llm: combineReasoningProfile("groq-gpt-oss-120b", String(form.get("model") ?? "")),
     tts: String(form.get("tts") ?? ""),
   };
   try {
@@ -51,12 +51,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function Index() {
-  const { configuration, profiles, plusProfiles, defaults } = useLoaderData<typeof loader>();
+  const { configuration, profiles, plusProfiles, defaultModel, defaults } = useLoaderData<typeof loader>();
   const result = useActionData<typeof action>();
   const value = result?.ok && result.configuration ? result.configuration : configuration;
   const fields: Array<{ role: ProviderRole; label: string; selected: string }> = [
     { role: "asr", label: "Speech recognition", selected: defaults.asr },
-    { role: "llm", label: "Reasoning model", selected: splitReasoningProfile(value.llmProfileId).chat },
     { role: "tts", label: "Drake voice", selected: value.ttsProfileId.startsWith("elevenlabs-")
       ? value.ttsProfileId : defaults.tts },
   ];
@@ -65,8 +64,8 @@ export default function Index() {
     <s-page heading="iShop-plus">
       <s-section heading="Drake provider settings">
         <s-paragraph>
-          ElevenLabs powers Drake's voice. Choose Vision and Missions independently;
-          the reasoning choice below applies to ordinary shopping chat. Changes apply to new shopper sessions.
+          ElevenLabs powers Drake's voice. One model handles conversation, photos, and shopping goals.
+          Changes apply to new shopper sessions.
         </s-paragraph>
         {result?.message ? <p role="status">{result.message}</p> : null}
         <Form method="post">
@@ -94,8 +93,8 @@ export default function Index() {
           ))}
           <p>
             <label>
-              Vision and Missions model<br />
-              <select name="plus" defaultValue={splitReasoningProfile(value.llmProfileId).plus}>
+              Drake model<br />
+              <select name="model" defaultValue={splitReasoningProfile(value.llmProfileId).plus === "default" ? defaultModel : splitReasoningProfile(value.llmProfileId).plus}>
                 {plusProfiles.map((profile) => (
                   <option key={profile.id} value={profile.id} disabled={!profile.enabled}>
                     {profile.label}{profile.enabled ? "" : " — server key unavailable"}
@@ -104,6 +103,7 @@ export default function Index() {
               </select>
             </label>
           </p>
+          {result?.errors?.llm ? <p role="alert">{result.errors.llm}</p> : null}
           <button type="submit">Save provider settings</button>
         </Form>
       </s-section>

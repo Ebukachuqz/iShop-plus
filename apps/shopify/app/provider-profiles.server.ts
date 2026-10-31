@@ -200,7 +200,7 @@ export function validateProfileSelection(selection: Record<ProviderRole, string>
     const profile = profiles.find((candidate) => candidate.id === selected);
     if (!profile || profile.role !== role) {
       errors[role] = "Choose a recognized profile for this role";
-    } else if (!profile.enabled) {
+    } else if (!profile.enabled && !(role === "llm" && reasoning.plus !== "default")) {
       errors[role] = profile.disabledReason ?? "This profile is unavailable";
     }
   }

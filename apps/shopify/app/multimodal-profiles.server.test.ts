@@ -24,3 +24,12 @@ test("browser-safe multimodal choices expose no secrets", () => {
   expect(plusProviderProfiles().find(p => p.id === "openrouter")?.enabled).toBe(true);
   expect(JSON.stringify(plusProviderProfiles())).not.toContain("never-expose-key");
 });
+
+
+test("one Drake model does not require a second ordinary-chat credential", () => {
+  delete process.env.GROQ_API_KEY;
+  delete process.env.GEMINI_API_KEY;
+  process.env.OPENROUTER_API_KEY = "configured";
+  expect(validateProfileSelection({asr:"elevenlabs-scribe-v2-realtime",
+    llm:"groq-gpt-oss-120b|plus=openrouter",tts:"elevenlabs-tts-female-stream"}).llm).toBeUndefined();
+});

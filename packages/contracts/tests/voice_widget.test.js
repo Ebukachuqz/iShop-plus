@@ -501,10 +501,10 @@ test('integrated widget and voice client submits exactly one shopping turn on du
 
   // Verify only ONE shopping_turn was transmitted
   const shoppingTurns = sentMessages.filter((m) => {
-    try { return JSON.parse(m).type === 'shopping_turn'; } catch (_) { return false; }
+    try { return JSON.parse(m).type === 'plus_request'; } catch (_) { return false; }
   });
   assert.equal(shoppingTurns.length, 1);
-  assert.equal(JSON.parse(shoppingTurns[0]).transcript, 'Find snowboard');
+  assert.equal(JSON.parse(shoppingTurns[0]).text, 'Find snowboard');
 
   // Verify shopper message was added to history exactly once
   const shopperMessages = widget.messageHistory.filter((m) => m.role === 'shopper');
@@ -607,10 +607,10 @@ test('microphone denial transitions to failed state and typing text submits clea
   await new Promise((resolve) => setTimeout(resolve, 20));
 
   const shoppingTurns = sentMessages.filter((m) => {
-    try { return JSON.parse(m).type === 'shopping_turn'; } catch (_) { return false; }
+    try { return JSON.parse(m).type === 'plus_request'; } catch (_) { return false; }
   });
   assert.equal(shoppingTurns.length, 1);
-  assert.equal(JSON.parse(shoppingTurns[0]).transcript, 'Find snowboard');
+  assert.equal(JSON.parse(shoppingTurns[0]).text, 'Find snowboard');
   assert.equal(widget.state.name, 'interpreting');
 });
 
@@ -893,11 +893,11 @@ test('mission budget follow-ups reuse the existing mission specification', async
   widget.missionReady = true;
   widget.missionProposal = { proposal_id: 'proposal_existing', revision: 1 };
   await widget.submitPlusRequest('Make the budget under 50 dollars');
-  assert.equal(requests[0].feature, 'refine');
+  assert.equal(requests[0].feature, 'route');
   assert.equal(widget.missionProposal, null);
   widget.plusBusy = false;
   await widget.submitPlusRequest('New mission: keyboard and mouse under 100 dollars');
-  assert.equal(requests[1].feature, 'mission');
+  assert.equal(requests[1].feature, 'route');
 });
 
 test('explicit product and cart actions leave Vision refinement routing and keep visible identities', async () => {
@@ -906,16 +906,12 @@ test('explicit product and cart actions leave Vision refinement routing and keep
   widget.visionReady = true;
   widget.plusResultsVisible = true;
   widget.candidates.products = [{ product_id: 'p1', title: 'Blue Keyboard' }, { product_id: 'p2', title: 'Black Keyboard' }];
-  assert.equal(widget.shouldUsePlus('Open the second one'), false);
-  assert.equal(widget.shouldUsePlus('Add this to my cart'), false);
-  assert.equal(widget.shouldUsePlus('Only black and under 50 dollars'), true);
   const calls = [];
   widget.submitShoppingRequest = async (...args) => calls.push(args);
   await widget.submitLegacyShoppingRequest('Open the second one');
   assert.match(calls[0][0], /Black Keyboard/);
   assert.equal(calls[0][1].products[1].product_id, 'p2');
   widget.plusMode = 'mission';
-  assert.equal(widget.shouldUsePlus('Show my cart'), false);
   assert.equal(widget.plusMode, 'mission');
 });
 
@@ -946,5 +942,5 @@ test('spoken basket approval is explicit and qualified replies remain refinement
   assert.deepEqual(approvals, ['approve']);
   await widget.submitPlusRequest('Yes, but make it cheaper');
   assert.deepEqual(approvals, ['approve']);
-  assert.equal(requests[0].feature, 'refine');
+  assert.equal(requests[0].feature, 'route');
 });

@@ -234,7 +234,29 @@ try {
   check(await evaluate("window.IShopDrake.candidates.products[0].variants[0].variant_id"), '101', 'Vision option grounded to actual fixture variant');
   check((await evaluate("fetch('/cart.js').then(r=>r.json())")).items[0].quantity, 1, 'Vision discovery does not add items');
 
-  await evaluate("window.IShopDrake.setPlusMode('mission'); true");
+  check(await evaluate("Array.from(document.querySelectorAll('.drake-features button')).some(b => b.textContent === 'Missions')"), false, 'no manual Missions mode button');
+  check(await evaluate("getComputedStyle(document.querySelector('.drake-card__title')).color"), 'rgb(241, 242, 255)', 'product heading readable in dark theme');
+  check(await evaluate("Array.from(document.querySelector('.drake-conversation').children).indexOf(document.querySelector('.drake-cards')) > Array.from(document.querySelector('.drake-conversation').children).findIndex(e => e.textContent === 'Find this in Ice')"), true, 'recommendations follow their originating request');
+  await submit('Show all colors');
+  await waitFor(() => evaluate("!window.IShopDrake.plusBusy && document.querySelector('.drake-variant-select')?.options.length === 3"));
+  await evaluate("document.querySelector('.drake-card__choose').click(); true");
+  check(await evaluate("document.querySelector('.drake-card__prepare').disabled"), true, 'multi-variant recommendation requires an explicit option');
+  check(await evaluate("document.querySelector('.drake-text-input').value"), '', 'choosing a product does not submit a bare title');
+  await evaluate("(() => { const select = document.querySelector('.drake-variant-select'); select.value = '102'; select.dispatchEvent(new Event('change')); document.querySelector('.drake-quantity-input').value = '2'; document.querySelector('.drake-card__prepare').click(); return true; })()");
+  await waitFor(() => evaluate("Boolean(window.IShopDrake.missionProposal) && !window.IShopDrake.plusBusy"));
+  check(await evaluate("window.IShopDrake.missionProposal.items[0].variant_id"), '102', 'Dawn variant identity preserved into proposal');
+  check(await evaluate("window.IShopDrake.missionProposal.items[0].quantity"), 2, 'selected quantity preserved into proposal');
+  check((await evaluate("fetch('/cart.js').then(r=>r.json())")).items.length, 1, 'reviewing selection performs no cart write');
+  await evaluate("window.IShopDrake.approveMissionButton.click(); true");
+  await waitFor(() => evaluate("!window.IShopDrake.plusBusy && !window.IShopDrake.plusMissionExecuting && !window.IShopDrake.missionProposal"));
+  cart = await evaluate("fetch('/cart.js').then(r=>r.json())");
+  check(cart.items.find(i=>String(i.variant_id)==='102').quantity, 2, 'approved exact variant and quantity verified');
+  check(cart.items.find(i=>String(i.variant_id)==='101').quantity, 1, 'preexisting Ice line preserved');
+  await evaluate("(async () => { const cart = await fetch('/cart.js').then(r=>r.json()); const line = cart.items.find(i=>String(i.variant_id)==='102'); return fetch('/cart/change.js', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:line.key, quantity:0})}).then(r=>r.json()); })()");
+  await evaluate("document.querySelector('.drake-card__open').click(); true");
+  await waitFor(() => evaluate("location.pathname === '/products/complete-snowboard' && location.search === '?variant=102'"));
+  await waitFor(() => evaluate("Boolean(window.IShopDrake?.client && window.IShopDrake?.bridge)"));
+  await evaluate("document.querySelector('.drake-launcher').click(); true");
   await submit('Build a three-board basket under 2500 USD');
   await waitFor(() => evaluate("Boolean(window.IShopDrake.missionProposal)"));
   check(await evaluate("window.IShopDrake.missionProposal.agents.length"), 3, 'three separately scoped research calls reach proposal');
@@ -243,7 +265,7 @@ try {
   check((await evaluate("fetch('/cart.js').then(r=>r.json())")).items[0].quantity, 1, 'rejected mission performs zero writes');
 
   // A committed transcript uses exactly the same mission route as typed input.
-  await evaluate("window.IShopDrake.handleVoiceEvent({type:'final_transcript', text:'New mission: three boards under 2500 USD'}); true");
+  await evaluate("window.IShopDrake.handleVoiceEvent({type:'final_transcript', text:'Find three boards under 2500 USD'}); true");
   await waitFor(() => evaluate("Boolean(window.IShopDrake.missionProposal) && !window.IShopDrake.plusBusy"));
   await evaluate("window.IShopDrake.approveMissionButton.click(); true");
   await waitFor(() => evaluate("!window.IShopDrake.plusBusy && !window.IShopDrake.plusMissionExecuting && !window.IShopDrake.missionProposal"));
