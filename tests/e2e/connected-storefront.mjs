@@ -210,6 +210,7 @@ try {
   await submit('Preview the Ice Complete Snowboard', null);
   await waitFor(() => evaluate("location.pathname === '/products/complete-snowboard' && location.search === '?variant=101'"));
   await waitFor(() => evaluate("document.querySelector('#ishop-drake-root')?.dataset.bootstrapState === 'ready'"));
+  await waitFor(() => evaluate("Boolean(window.IShopDrake?.client && document.querySelector('.drake-conversation')?.innerText.includes('Preview the Ice Complete Snowboard'))"));
   check(await evaluate("document.querySelector('.drake-conversation').innerText.includes('Preview the Ice Complete Snowboard')"), true, 'bounded recent conversation restored after navigation document');
   check(await evaluate("window.IShopDrake.pageContext.previous_path.startsWith('/search?')"), true, 'native search page recorded as previous page');
   await waitFor(() => evaluate("Boolean(window.IShopDrake?.client && window.IShopDrake?.bridge)"));
