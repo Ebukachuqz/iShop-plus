@@ -828,3 +828,27 @@ def test_pidgin_show_cart_requests_drawer_with_safe_page_fallback(four_item_evid
     assert result.authorized_command is not None
     assert result.authorized_command.operation == CommandOperation.NAVIGATE_STOREFRONT
     assert result.authorized_command.parameters == {"url": "/cart", "presentation": "drawer_or_page"}
+
+
+def test_recommendation_order_is_independent_of_enrichment_order(four_item_evidence, empty_cart):
+    ids = list(four_item_evidence.products)
+    controller = ShoppingController(llm_provider=FakeLlmProvider())
+    result = asyncio.run(controller.handle_turn(
+        'sess_cards', 'turn_cards', 1, 1, 'open the second one', four_item_evidence, empty_cart,
+        displayed_search={'schema_version':'1.0.0','adapter':'drake-recommendations-v1',
+                          'actual_url':'/#cards_1','query':'Recommendations','sort_by':'relevance',
+                          'rendered_count':2,'ordered_product_ids':[ids[1],ids[0]]},
+    ))
+    assert result.authorized_command is not None
+    assert result.authorized_command.parameters['url'] == four_item_evidence.products[ids[0]].url
+
+
+def test_unknown_displayed_identity_cannot_authorize_navigation(four_item_evidence, empty_cart):
+    controller = ShoppingController(llm_provider=FakeLlmProvider())
+    result = asyncio.run(controller.handle_turn(
+        'sess_cards', 'turn_cards', 1, 1, 'open the second one', four_item_evidence, empty_cart,
+        displayed_search={'actual_url':'/#cards_1','query':'Recommendations',
+                          'rendered_count':2,'ordered_product_ids':['unobserved','another']},
+    ))
+    assert result.authorized_command is None
+    assert result.failure_code == 'displayed_search_mismatch'

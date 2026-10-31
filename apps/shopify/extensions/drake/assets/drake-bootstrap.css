@@ -222,3 +222,9 @@
   #ishop-drake-root .drake-composer { padding: .35rem .75rem; }
   #ishop-drake-root .drake-privacy { padding-bottom: .35rem; }
 }
+/* Deep Chat owns the scrollable transcript; captions and errors stay outside it. */
+#ishop-drake-root .drake-chat { display:block; min-height:0; flex:1 1 0; width:100%; }
+#ishop-drake-root .drake-conversation { overflow:hidden; }
+#ishop-drake-root .drake-caption:empty { display:none; }
+#ishop-drake-root .drake-error { flex-shrink:0; max-height:5rem; overflow:auto; }
+#ishop-drake-root .drake-dismiss-error { align-self:flex-end; color:#c8cce0; background:transparent; border:0; cursor:pointer; font-size:.75rem; }

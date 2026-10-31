@@ -35,16 +35,41 @@ async function cdp(method, params = {}) {
   return new Promise((resolveCall, rejectCall) => pending.set(id, { resolveCall, rejectCall }));
 }
 async function evaluate(expression) {
-  const response = await cdp('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+  // Deep Chat and Drake's trusted card blocks use separate shadow roots.
+  const prelude = `
+    const deepAll = (selector, root = document) => {
+      let found = [...root.querySelectorAll(selector)];
+      for (const child of root.querySelectorAll('*')) if (child.shadowRoot) found.push(...deepAll(selector, child.shadowRoot));
+      return found;
+    };
+    const drakeAll = selector => {
+      const cards = window.IShopDrake?.cards;
+      if (cards && /^\\.drake-(?:card|variant|quantity)/.test(selector) && selector !== '.drake-cards') return [...cards.querySelectorAll(selector)];
+      return deepAll(selector);
+    };
+    const drakeQuery = selector => drakeAll(selector)[0] || null;
+    const deepText = node => {
+      if (!node) return '';
+      if (node.nodeType === 3) return node.textContent;
+      if (['STYLE','SCRIPT'].includes(node.tagName)) return '';
+      return [...node.childNodes].map(deepText).join(' ') + (node.shadowRoot ? deepText(node.shadowRoot) : '');
+    };
+  `;
+  expression = expression.replaceAll("document.querySelector('.drake-conversation')?.innerText", "deepText(drakeQuery('.drake-conversation'))")
+    .replaceAll("document.querySelector('.drake-conversation').innerText", "deepText(drakeQuery('.drake-conversation'))")
+    .replaceAll('document.body.innerText', 'deepText(document.body)')
+    .replaceAll('document.querySelectorAll(', 'drakeAll(').replaceAll('document.querySelector(', 'drakeQuery(');
+  const response = await cdp('Runtime.evaluate', { expression: `(() => {${prelude} return eval(${JSON.stringify(expression)});})()`, awaitPromise: true, returnByValue: true });
   if (response.exceptionDetails) throw new Error(response.exceptionDetails.text);
   return response.result.result.value;
 }
 
 async function submit(text, expectedState = 'ready') {
+  const beforeRevision = await evaluate('window.IShopDrake.client.revision');
   await evaluate(`document.querySelector('.drake-text-input').value=${JSON.stringify(text)}; document.querySelector('.drake-text-input').closest('form').querySelector('.drake-send').click(); true`);
   if (expectedState) {
     try {
-      await waitFor(() => evaluate(`document.querySelector('#ishop-drake-root')?.dataset.state === ${JSON.stringify(expectedState)}`));
+      await waitFor(() => evaluate(`document.querySelector('#ishop-drake-root')?.dataset.state === ${JSON.stringify(expectedState)} && !window.IShopDrake.plusBusy && window.IShopDrake.client.revision > ${beforeRevision}`));
     } catch (error) {
       const currentUrl = await evaluate("location.href");
       throw new Error(`${error.message} after ${JSON.stringify(text)} expected ${expectedState}; url=${currentUrl}; cart=${JSON.stringify(await evaluate("fetch('/cart.js').then(r=>r.json())"))}: ${await evaluate("document.body.innerText")}`);
@@ -178,6 +203,14 @@ try {
   cart = await evaluate("fetch('/cart.js').then(r=>r.json())");
   check(cart.items.length, 0, 'category discovery does not mutate cart');
 
+  await evaluate(`(() => {
+    const w=window.IShopDrake; window.__selectionRevision=w.client.revision;
+    w.textInput.value='Oh yeah, I will go for the second one. Pick the second one for me.';
+    w.textInput.closest('form').querySelector('.drake-send').click(); return true;
+  })()`);
+  await waitFor(() => evaluate("window.IShopDrake.selectedRecommendation?.product_id === window.IShopDrake.candidates.products[1]?.product_id"));
+  check(await evaluate("window.IShopDrake.client.revision === window.__selectionRevision"), true, 'spoken-style second recommendation selection needs no extra model call');
+
   await submit('Find snowboard');
   try {
     await waitFor(() => evaluate("document.querySelector('.drake-conversation').innerText.includes('Complete Snowboard')"));
@@ -280,6 +313,9 @@ try {
     return true;
   })()`);
   await submit('Find this in Ice');
+  await waitFor(() => evaluate("Boolean(window.IShopDrake.transcript?.view.getMessages().some(m => m.role === 'user' && m.files?.[0]?.type === 'image'))"));
+  check(await evaluate("window.IShopDrake.messageHistory.some(m => m.text === 'Find this in Ice' && m.attachment?.startsWith('data:image/jpeg;base64,'))"), true, 'uploaded image becomes a bounded message attachment');
+  check(await evaluate("document.querySelector('deep-chat').shadowRoot.querySelectorAll('img').length > 0"), true, 'Deep Chat renders submitted photo inside transcript');
   await waitFor(() => evaluate("window.IShopDrake.visionReady && document.querySelectorAll('.drake-card').length === 1"));
   check(await evaluate("window.IShopDrake.candidates.products[0].variants.length"), 1, 'Vision exposes only matching variants');
   check(await evaluate("window.IShopDrake.candidates.products[0].variants[0].variant_id"), '101', 'Vision option grounded to actual fixture variant');
@@ -287,8 +323,10 @@ try {
 
   check(await evaluate("Array.from(document.querySelectorAll('.drake-features button')).some(b => b.textContent === 'Missions')"), false, 'no manual Missions mode button');
   check(await evaluate("getComputedStyle(document.querySelector('.drake-card__title')).color"), 'rgb(241, 242, 255)', 'product heading readable in dark theme');
-  check(await evaluate("Array.from(document.querySelector('.drake-conversation').children).indexOf(document.querySelector('.drake-cards')) > Array.from(document.querySelector('.drake-conversation').children).findIndex(e => e.textContent === 'Find this in Ice')"), true, 'recommendations follow their originating request');
+  check(await evaluate("(() => { const entries = window.IShopDrake.messageHistory; return entries.findLastIndex(e => e.products?.length) > entries.findLastIndex(e => e.text === 'Find this in Ice'); })()"), true, 'recommendations follow their originating request');
+  await evaluate("window.__originalVisionBlock = window.IShopDrake.cards; true");
   await submit('Show all colors');
+  check(await evaluate("window.__originalVisionBlock.isConnected && window.__originalVisionBlock !== window.IShopDrake.cards && window.__originalVisionBlock.querySelector('.drake-variant-select').options.length === 2"), true, 'refinement appends a new block without overwriting earlier recommendation variants');
   await waitFor(() => evaluate("!window.IShopDrake.plusBusy && document.querySelector('.drake-variant-select')?.options.length === 3"));
   await evaluate("document.querySelector('.drake-card__choose').click(); true");
   check(await evaluate("document.querySelector('.drake-card__prepare').disabled"), true, 'multi-variant recommendation requires an explicit option');
@@ -329,6 +367,31 @@ try {
   await submit('What is your return policy?', 'failed');
   check(await evaluate("document.querySelector('.drake-conversation').innerText.includes('safely choose') || document.querySelector('.drake-conversation').innerText.includes('unavailable')"), true, 'policy capability unavailable is honest');
   check(await evaluate("document.querySelector('.drake-error').innerText"), '', 'spoken failure is not duplicated in the error panel');
+
+  // Speech billing/network failures must leave local Stop usable and text working.
+  await evaluate(`(() => {
+    const w = window.IShopDrake; window.__captureStops = 0;
+    w.capture = {stop:()=>{window.__captureStops++;}}; w.micButton.hidden = true; w.stopButton.hidden = false;
+    w.handleVoiceEvent({type:'error',source:'speech',request_revision:w.client.revision,error_code:'speech_insufficient_credits'});
+    w.handleVoiceEvent({type:'closed'}); return true;
+  })()`);
+  check(await evaluate("window.__captureStops > 0 && window.IShopDrake.stopButton.hidden && !window.IShopDrake.micButton.hidden"), true, 'provider failure releases local recording controls');
+  check(await evaluate("document.querySelector('.drake-error').textContent.includes('insufficient credits') && !document.querySelector('.drake-error').hidden"), true, 'billing error persists through disconnect state');
+  await evaluate(`(() => {
+    const w=window.IShopDrake, finish=w.client.finishTurn;
+    w.capture={stop(){}}; w.client.finishTurn=()=>{throw new Error('disconnected');};
+    w.stopButton.hidden=false; w.stopButton.click(); w.client.finishTurn=finish; return true;
+  })()`);
+  check(await evaluate("!window.IShopDrake.capture && window.IShopDrake.stopButton.hidden"), true, 'finish recording cleans up despite a disconnected send');
+  await submit('How are you, Drake?');
+  await evaluate("document.querySelector('.drake-dismiss-error').click(); true");
+  check(await evaluate("document.querySelector('.drake-error').hidden"), true, 'error can be dismissed explicitly after text recovery');
+
+  await evaluate(`window.IShopDrake.addMessage('assistant', '<img src=x onerror="window.__unsafeChatHtml=true">'); true`);
+  check(await evaluate("!window.__unsafeChatHtml && !document.querySelector('deep-chat').shadowRoot.querySelector('img[src=x]')"), true, 'Deep Chat treats untrusted model HTML as text');
+  await cdp('Emulation.setDeviceMetricsOverride',{width:390,height:740,deviceScaleFactor:1,mobile:true});
+  check(await evaluate("(() => { const panel=document.querySelector('.drake-panel').getBoundingClientRect(); const record=document.querySelector('.drake-mic').getBoundingClientRect(); return panel.right <= innerWidth && record.bottom <= innerHeight && record.top >= 0; })()"),true,'mobile recording controls remain within viewport');
+  await cdp('Emulation.clearDeviceMetricsOverride');
 
   await submit('Show my order history', null);
   await waitFor(() => evaluate("location.pathname === '/account'"));

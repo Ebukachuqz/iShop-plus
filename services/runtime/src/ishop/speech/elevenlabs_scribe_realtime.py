@@ -15,6 +15,28 @@ from ishop.speech.realtime import RealtimeSpeechSession, SpeechEventKind, Speech
 ELEVENLABS_REALTIME_STT_WS_URL = "wss://api.elevenlabs.io/v1/speech-to-text/realtime"
 
 
+def speech_failure_code(error: Any) -> str:
+    """Allowlisted public codes; never forward provider payloads or close reasons."""
+    reason = str(error).lower()
+    if any(
+        value in reason
+        for value in ("insufficient_funds", "insufficient_credits", "quota_exceeded")
+    ):
+        return "speech_insufficient_credits"
+    if any(value in reason for value in ("rate_limit", "resource_exhausted", "queue_overflow")):
+        return "speech_rate_limited"
+    if any(
+        value in reason
+        for value in ("unauthorized", "authentication", "invalid_api_key", "auth_error")
+    ):
+        return "speech_auth_failed"
+    if "unaccepted_terms" in reason:
+        return "speech_terms_required"
+    if "insufficient_audio_activity" in reason:
+        return "speech_no_audio"
+    return "provider_stream_failed"
+
+
 async def _default_connect(url: str, headers: dict[str, str]):
     try:
         from websockets.asyncio.client import connect
@@ -45,7 +67,9 @@ class ElevenLabsScribeRealtimeSession(RealtimeSpeechSession):
         if channels != 1:
             raise ValueError("ElevenLabs realtime transcription accepts mono audio only")
         self._model_id = model_id
-        self._endpoint_url = endpoint_url or os.getenv("ELEVENLABS_REALTIME_STT_WS_URL", ELEVENLABS_REALTIME_STT_WS_URL)
+        self._endpoint_url = endpoint_url or os.getenv(
+            "ELEVENLABS_REALTIME_STT_WS_URL", ELEVENLABS_REALTIME_STT_WS_URL
+        )
         self._connector = connector or _default_connect
         self._socket: Any = None
         self._session_id = f"el_stt_{revision}"
@@ -54,31 +78,59 @@ class ElevenLabsScribeRealtimeSession(RealtimeSpeechSession):
         self._events_queue: asyncio.Queue[SpeechStreamEvent] = asyncio.Queue()
         self._receive_task: asyncio.Task[None] | None = None
         self._last_final_text: str | None = None
+        self._failure_code: str | None = None
 
     async def start(self) -> SpeechStreamEvent:
         if not self._api_key:
             raise SpeechProviderError("ELEVENLABS_API_KEY not configured", "elevenlabs", False)
-        query_values = {"model_id": self._model_id, "audio_format": f"pcm_{self._sample_rate}", "commit_strategy": "manual"}
+        query_values = {
+            "model_id": self._model_id,
+            "audio_format": f"pcm_{self._sample_rate}",
+            "commit_strategy": "manual",
+        }
         if self._language and self._language not in {"pcm", "auto"}:
             query_values["language_code"] = self._language
         query = urlencode(query_values)
-        self._socket = await self._connector(
-            f"{self._endpoint_url}?{query}",
-            {"xi-api-key": self._api_key},
-        )
+        try:
+            self._socket = await self._connector(
+                f"{self._endpoint_url}?{query}",
+                {"xi-api-key": self._api_key},
+            )
+        except Exception as exc:
+            error = SpeechProviderError("Speech recognition could not connect", "elevenlabs")
+            code = speech_failure_code(exc)
+            error.error_code = code if code != "provider_stream_failed" else "provider_start_failed"
+            raise error from exc
         self._receive_task = asyncio.create_task(self._pump_events())
         ev = SpeechStreamEvent(SpeechEventKind.SESSION_STARTED, self._session_id, self._revision)
         return ev
 
     async def send_audio(self, pcm16_audio: bytes) -> None:
+        if self._failure_code:
+            error = SpeechProviderError("Speech recognition is unavailable", "elevenlabs", False)
+            error.error_code = self._failure_code
+            raise error
         if self._closed or self._committed:
             raise RuntimeError("Cannot send audio on committed or closed session")
         if self._socket is not None:
             import base64
-            await self._socket.send(json.dumps({
-                "message_type": "input_audio_chunk",
-                "audio_base_64": base64.b64encode(pcm16_audio).decode("ascii"),
-            }))
+
+            try:
+                await self._socket.send(
+                    json.dumps(
+                        {
+                            "message_type": "input_audio_chunk",
+                            "audio_base_64": base64.b64encode(pcm16_audio).decode("ascii"),
+                        }
+                    )
+                )
+            except Exception as exc:
+                self._failure_code = speech_failure_code(exc)
+                error = SpeechProviderError(
+                    "Speech recognition connection closed", "elevenlabs", False
+                )
+                error.error_code = self._failure_code
+                raise error from exc
 
     async def commit(self) -> None:
         if self._committed or self._closed:
@@ -86,11 +138,15 @@ class ElevenLabsScribeRealtimeSession(RealtimeSpeechSession):
         self._committed = True
         if self._socket is not None:
             try:
-                await self._socket.send(json.dumps({
-                    "message_type": "input_audio_chunk",
-                    "audio_base_64": "",
-                    "commit": True,
-                }))
+                await self._socket.send(
+                    json.dumps(
+                        {
+                            "message_type": "input_audio_chunk",
+                            "audio_base_64": "",
+                            "commit": True,
+                        }
+                    )
+                )
             except Exception:
                 pass
 
@@ -128,29 +184,75 @@ class ElevenLabsScribeRealtimeSession(RealtimeSpeechSession):
                 except Exception:
                     continue
                 msg_type = data.get("type") or data.get("message_type")
-                if msg_type in ("error", "quota_exceeded", "rate_limit_exceeded"):
-                    err_code = data.get("error_code") or msg_type
+                if msg_type in {
+                    "error",
+                    "quota_exceeded",
+                    "rate_limit_exceeded",
+                    "insufficient_funds",
+                    "insufficient_funds_initial_check",
+                    "auth_error",
+                    "transcriber_error",
+                    "input_error",
+                    "invalid_request",
+                    "unaccepted_terms",
+                    "rate_limited",
+                    "queue_overflow",
+                    "resource_exhausted",
+                    "session_time_limit_exceeded",
+                    "chunk_size_exceeded",
+                    "insufficient_audio_activity",
+                    "commit_throttled",
+                }:
+                    err_code = speech_failure_code(
+                        f"{data.get('error_code', '')} {msg_type} "
+                        f"{data.get('error', '')} {data.get('message', '')}"
+                    )
+                    self._failure_code = err_code
                     await self._events_queue.put(
-                        SpeechStreamEvent(SpeechEventKind.ERROR, self._session_id, self._revision, error_code=err_code)
+                        SpeechStreamEvent(
+                            SpeechEventKind.ERROR,
+                            self._session_id,
+                            self._revision,
+                            error_code=err_code,
+                        )
                     )
                     break
                 elif msg_type == "partial_transcript":
                     text = data.get("text", "")
                     await self._events_queue.put(
-                        SpeechStreamEvent(SpeechEventKind.PARTIAL_TRANSCRIPT, self._session_id, self._revision, text=text)
+                        SpeechStreamEvent(
+                            SpeechEventKind.PARTIAL_TRANSCRIPT,
+                            self._session_id,
+                            self._revision,
+                            text=text,
+                        )
                     )
                 elif msg_type in ("committed_transcript", "final_transcript"):
                     text = data.get("text", "")
                     if text != self._last_final_text:
                         self._last_final_text = text
                         await self._events_queue.put(
-                            SpeechStreamEvent(SpeechEventKind.FINAL_TRANSCRIPT, self._session_id, self._revision, text=text)
+                            SpeechStreamEvent(
+                                SpeechEventKind.FINAL_TRANSCRIPT,
+                                self._session_id,
+                                self._revision,
+                                text=text,
+                            )
                         )
                         break
         except asyncio.CancelledError:
             pass
-        except Exception:
-            pass
+        except Exception as exc:
+            if not self._closed and self._last_final_text is None:
+                self._failure_code = speech_failure_code(exc)
+                await self._events_queue.put(
+                    SpeechStreamEvent(
+                        SpeechEventKind.ERROR,
+                        self._session_id,
+                        self._revision,
+                        error_code=self._failure_code,
+                    )
+                )
         finally:
             await self._events_queue.put(
                 SpeechStreamEvent(SpeechEventKind.CLOSED, self._session_id, self._revision)

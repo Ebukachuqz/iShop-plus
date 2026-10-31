@@ -94,6 +94,7 @@
       this.currentProductHandle = null;
       this.candidates = new CandidateSet([]);
       this.capture = null;
+      this.captureGeneration = 0;
       this.continuousMode = false;
       this.continuousTurn = null;
       this.continuousAudioQueue = [];
@@ -173,6 +174,8 @@
         if (!Array.isArray(parsed)) return;
         this.messageHistory = parsed.filter((item) => item && ["shopper", "assistant"].includes(item.role) && typeof item.text === "string").slice(-16);
         for (const item of this.messageHistory) {
+          if (Array.isArray(item.products)) { this.renderProducts(item.products, item.query, item); continue; }
+          if (this.transcript) { this.transcript.add(item); continue; }
           const message = element("p", `drake-message drake-message--${item.role}`, item.text);
           this.conversation.insertBefore(message, this.cards);
         }
@@ -231,6 +234,17 @@
         this.caption,
         this.error,
       );
+      if (window.IShopChat) {
+        this.conversation.replaceChildren(this.caption, this.error);
+        this.transcript = new window.IShopChat.Transcript(this.conversation);
+        this.transcript.add({role:'assistant',text:'Hi, I’m Drake. Tell me what you’re shopping for, or type below.'});
+      }
+      this.dismissErrorButton = element('button', 'drake-dismiss-error', 'Dismiss message');
+      this.dismissErrorButton.type = 'button'; this.dismissErrorButton.hidden = true;
+      this.dismissErrorButton.addEventListener('click', () => {
+        this.error.hidden = true; this.error.textContent = ''; this.dismissErrorButton.hidden = true;
+      });
+      this.conversation.append(this.dismissErrorButton);
       this.featureControls = element("div", "drake-features");
       this.featureControls.setAttribute("aria-label", "Message attachments");
       this.visionButton = element("button", "drake-feature", "＋ Photo");
@@ -263,12 +277,14 @@
       this.sendButton.type = "submit";
       form.append(this.textInput, this.sendButton);
       const controls = element("div", "drake-controls");
-      this.micButton = element("button", "drake-mic", "Start speaking");
+      this.micButton = element("button", "drake-mic", "Record request");
+      this.micButton.title = 'Record one request, then finish to send it';
       this.micButton.type = "button";
-      this.stopButton = element("button", "drake-stop", "Stop");
+      this.stopButton = element("button", "drake-stop", "Finish recording");
       this.stopButton.type = "button";
       this.stopButton.hidden = true;
-      this.conversationButton = element("button", "drake-conversation-start", "Start conversation");
+      this.conversationButton = element("button", "drake-conversation-start", "Live conversation");
+      this.conversationButton.title = 'Listen for successive requests until you end the conversation';
       this.conversationButton.type = "button";
       this.endConversationButton = element("button", "drake-conversation-end", "End conversation");
       this.endConversationButton.type = "button";
@@ -289,7 +305,7 @@
       });
       this.editVoiceButton.title = "Edit the recognized words, then send a new request";
       controls.append(this.audioStatus, this.playButton, this.editVoiceButton);
-      this.privacy = element("p", "drake-privacy", "Your microphone starts only when you press Start speaking or Start conversation.");
+      this.privacy = element("p", "drake-privacy", "Record request: one message. Live conversation: hands-free until you end it.");
       this.panel.append(header, this.orbSurface, this.status, this.conversation, this.attachment, this.featureControls, form, controls, this.privacy);
       this.root.replaceChildren(this.launcher, this.panel);
     }
@@ -336,6 +352,7 @@
     async startConversation() {
       this.playback?.unlock?.();
       if (!this.client || !this.voice || this.continuousMode) return;
+      const generation = ++this.captureGeneration;
       try {
         if (this.playback) this.interruptPlayback();
         this.continuousMode = true;
@@ -346,12 +363,14 @@
           onChunk: (chunk) => this.sendContinuousAudio(chunk),
         });
         await this.capture.start();
-        try { sessionStorage.setItem(this.conversationResumeKey, "requested"); } catch (_) {}
+        if (generation !== this.captureGeneration) return;
+        try { sessionStorage.setItem(this.conversationResumeKey, "requested"); } catch (_) { /* Best-effort cleanup or optional browser capability. */ }
         this.micButton.hidden = true; this.stopButton.hidden = true;
         this.conversationButton.hidden = true; this.endConversationButton.hidden = false;
         this.privacy.textContent = "Conversation microphone is on. Drake sends audio only after speech is detected.";
         this.setState("listening");
       } catch (_) {
+        if (generation !== this.captureGeneration) return;
         this.continuousMode = false;
         if (this.capture) this.capture.stop();
         this.capture = null;
@@ -364,7 +383,7 @@
       this.continuousAudioQueue = [];
       this.continuousTurn = this.client.startTurn({}).then(() => {
         this.lastRevision = this.client.revision;
-        try { sessionStorage.setItem(this.revisionKey, String(this.lastRevision)); } catch (_) {}
+        try { sessionStorage.setItem(this.revisionKey, String(this.lastRevision)); } catch (_) { /* Best-effort cleanup or optional browser capability. */ }
         for (const chunk of this.continuousAudioQueue.splice(0)) this.client.sendAudio(chunk);
       }).catch(() => this.endConversation("The speech service could not start. You can still type."));
       this.setState("listening");
@@ -396,14 +415,13 @@
       this.setState("interpreting");
     }
     endConversation(message = "") {
-      if (this.capture) this.capture.stop(false);
-      this.capture = null; this.continuousMode = false; this.continuousTurn = null; this.continuousAudioQueue = [];
-      if (this.client) this.client.cancelTurn();
+      this.stopCaptureLocally();
+      try { this.client?.cancelTurn(); } catch (_) { /* Best-effort cleanup or optional browser capability. */ }
       if (this.playback) this.interruptPlayback();
-      try { sessionStorage.removeItem(this.conversationResumeKey); } catch (_) {}
+      try { sessionStorage.removeItem(this.conversationResumeKey); } catch (_) { /* Best-effort cleanup or optional browser capability. */ }
       this.micButton.hidden = false; this.stopButton.hidden = true;
       this.conversationButton.hidden = false; this.endConversationButton.hidden = true;
-      this.privacy.textContent = message || "Your microphone starts only when you press Start speaking or Start conversation.";
+      this.privacy.textContent = message || "Record request: one message. Live conversation: hands-free until you end it.";
       this.setState("ready");
     }
     setState(name, detail) {
@@ -412,8 +430,11 @@
       this.statusBeforeSpeaking = view.label;
       this.statusText.textContent = this.root.dataset.audioState === "speaking" ? ACTIVITY_LABELS.speaking : view.label;
       this.root.dataset.activity = name === "listening" ? "listening" : name === "failed" ? "error" : ["interpreting", "checking", "updating"].includes(name) ? "working" : "idle";
-      this.error.textContent = view.error;
-      this.error.hidden = !view.error;
+      if (view.error) {
+        this.error.textContent = view.error;
+        this.error.hidden = false;
+        if (this.dismissErrorButton) this.dismissErrorButton.hidden = false;
+      }
       const busy = ["listening", "interpreting", "checking", "updating", "reconnecting"].includes(view.name);
       this.root.setAttribute("aria-busy", String(busy));
       return view;
@@ -424,17 +445,24 @@
         this.setState("failed", { error: "Voice is not connected. You can still type your request." });
         return;
       }
+      const generation = ++this.captureGeneration;
+      this.micButton.hidden = true; this.stopButton.hidden = false;
       try {
         if (this.playback) this.interruptPlayback();
         await this.client.startTurn({});
+        if (generation !== this.captureGeneration) return;
         this.lastRevision = this.client.revision;
-        try { sessionStorage.setItem(this.revisionKey, String(this.lastRevision)); } catch (_) {}
-        this.capture = new this.voice.PcmCapture({ sampleRate: 16000, channels: 1, onChunk: (chunk) => this.client.sendAudio(chunk) });
+        try { sessionStorage.setItem(this.revisionKey, String(this.lastRevision)); } catch (_) { /* Best-effort cleanup or optional browser capability. */ }
+        this.capture = new this.voice.PcmCapture({ sampleRate: 16000, channels: 1, onChunk: (chunk) => {
+          try { this.client.sendAudio(chunk); } catch (_) { this.stopCaptureLocally(); this.setState('failed', {error:'Voice connection was lost. You can still type your request.'}); }
+        } });
         await this.capture.start();
+        if (generation !== this.captureGeneration) return;
         this.micButton.hidden = true;
         this.stopButton.hidden = false;
         this.setState("listening");
       } catch (_) {
+        if (generation !== this.captureGeneration) return;
         if (this.capture) this.capture.stop();
         this.capture = null;
         if (this.client) this.client.cancelTurn();
@@ -444,17 +472,33 @@
       }
     }
     finishListening() {
-      if (this.capture) this.capture.stop(true);
-      this.capture = null;
-      this.micButton.hidden = false;
-      this.stopButton.hidden = true;
-      if (this.client) this.client.finishTurn();
-      this.setState("interpreting");
+      try {
+        const recording = Boolean(this.capture);
+        if (this.capture) this.capture.stop(true);
+        this.stopCaptureLocally();
+        if (!recording) { this.client?.cancelTurn(); this.setState('ready'); return; }
+        this.client?.finishTurn();
+        this.setState("interpreting");
+      } catch (_) {
+        this.stopCaptureLocally();
+        this.setState('failed', {error:'Recording stopped. The voice connection was lost; please record again or type your request.'});
+      }
+    }
+    stopCaptureLocally() {
+      ++this.captureGeneration;
+      const capture = this.capture;
+      this.capture = null; this.continuousMode = false; this.continuousTurn = null; this.continuousAudioQueue = [];
+      try { capture?.stop(false); } catch (_) { /* Best-effort cleanup or optional browser capability. */ }
+      if (this.micButton) this.micButton.hidden = false;
+      if (this.stopButton) this.stopButton.hidden = true;
+      if (this.conversationButton) this.conversationButton.hidden = false;
+      if (this.endConversationButton) this.endConversationButton.hidden = true;
+      try { sessionStorage.removeItem(this.conversationResumeKey); } catch (_) { /* Best-effort cleanup or optional browser capability. */ }
+      if (this.privacy) this.privacy.textContent = 'Record request: one message. Live conversation: hands-free until you end it.';
     }
     cancel() {
-      if (this.capture) this.capture.stop();
-      this.capture = null;
-      if (this.client) this.client.cancelTurn();
+      this.stopCaptureLocally();
+      try { this.client?.cancelTurn(); } catch (_) { /* Best-effort cleanup or optional browser capability. */ }
       if (this.playback) this.interruptPlayback();
       this.micButton.hidden = false;
       this.stopButton.hidden = true;
@@ -466,7 +510,7 @@
       if (!text) return;
       if (this.playback) this.interruptPlayback();
       this.textInput.value = "";
-      this.addMessage("shopper", text);
+      this.addMessage("shopper", text, this.selectedImagePreview);
       this.state.acceptFinal(text);
       if (this.handleBrowserControl(text)) return;
       if (this.client?.sendPlusRequest) { await this.submitPlusRequest(text); return; }
@@ -491,7 +535,7 @@
         if (this.editVoiceButton) this.editVoiceButton.hidden = false;
         this.state.acceptFinal(finalText);
         this.caption.textContent = "";
-        this.addMessage("shopper", finalText);
+        this.addMessage("shopper", finalText, this.selectedImagePreview);
         if (this.handleBrowserControl(finalText)) return;
         if (this.client?.sendPlusRequest) { this.submitPlusRequest(finalText); return; }
         if (this.plusResultsVisible) this.submitLegacyShoppingRequest(finalText);
@@ -499,6 +543,11 @@
       } else if (event.type === "error") {
         if (event.request_revision != null && Number(event.request_revision) !== Number(this.client?.revision)) return;
         const messages = {
+          speech_insufficient_credits: 'ElevenLabs voice recognition has insufficient credits. Please check the account balance or type your request.',
+          speech_rate_limited: 'Voice recognition is busy. Please wait before recording again, or type your request.',
+          speech_auth_failed: 'Voice recognition could not authenticate. Please check the ElevenLabs configuration. You can still type.',
+          speech_terms_required: 'Please accept the Scribe terms in the ElevenLabs dashboard. You can still type your request.',
+          speech_no_audio: 'No speech was detected. Recording has stopped; please try again or type your request.',
           invalid_shopping_turn: "I couldn’t validate the store information for that request.",
           shopping_runtime_failed: "The shopping service failed while processing that request.",
           provider_start_failed: "The speech service could not start. Please try again.",
@@ -508,8 +557,10 @@
           QUOTA_EXCEEDED: "The speech service limit has been reached. You can still type.",
           INSUFFICIENT_AUDIO_ACTIVITY: "I didn’t hear enough speech. Please try again or type.",
         };
+        if (event.source === 'speech' || /^speech_|^provider_|^audio_|^session_not_started/.test(event.error_code || '')) this.stopCaptureLocally();
         this.setState("failed", { error: messages[event.error_code] || "I couldn’t process that. Please try again or type your request." });
       } else if (event.type === "shopping_result") {
+        let resultProducts = null;
         if (event.status === "context_required") {
           this.submitShoppingRequest(this.pendingTranscript, null, this.pendingTurn);
           return;
@@ -533,10 +584,11 @@
           const byId = new Map(pool.map((product) => [String(product.product_id), product]));
           const matched = event.result_product_ids.map((id) => byId.get(String(id))).filter(Boolean);
           if (matched.length) {
-            this.renderProducts(matched);
+            resultProducts = matched;
           }
         }
         if (event.spoken_response) this.addMessage("assistant", event.spoken_response);
+        if (resultProducts) this.renderProducts(resultProducts);
         this.playTts(event.tts_audio_chunks);
         if (event.status === "clarification_needed") {
           this.setState("clarifying");
@@ -588,13 +640,19 @@
         }
         this.pendingTurn = null;
       } else if (event.type === "closed") {
+        this.stopCaptureLocally();
         this.interruptPlayback();
         this.plusBusy = false;
         this.plusMissionExecuting = false;
         this.plusRequestId = null;
         this.missionProposal = null;
         if (this.proposalPanel) this.proposalPanel.hidden = true;
-        this.setState("reconnecting");
+        this.setState("reconnecting", { error: "" });
+        if (this.error.hidden) {
+          this.error.textContent = 'Connection lost. Recording has stopped. Send a new request to reconnect.';
+          this.error.hidden = false;
+          if (this.dismissErrorButton) this.dismissErrorButton.hidden = false;
+        }
       }
     }
 
@@ -616,6 +674,8 @@
     }
 
     async selectImage(file) {
+      const generation = (this.imageSelectionGeneration || 0) + 1;
+      this.imageSelectionGeneration = generation;
       if (!file) return;
       if (!["image/jpeg", "image/png", "image/webp"].includes(file.type) || file.size > 4 * 1024 * 1024 || !file.size) {
         this.setState("failed", { error: "Choose a JPG, PNG, or WebP photo smaller than 4 MB." });
@@ -630,8 +690,12 @@
           reader.readAsDataURL(file);
         });
         const data = dataUrl.split(",")[1];
+        if (generation !== this.imageSelectionGeneration) return;
         if (!data) throw new Error("image_read_failed");
+        const preview = await this.makeImagePreview(dataUrl);
+        if (generation !== this.imageSelectionGeneration) return;
         this.selectedImage = { mime_type: file.type, data };
+        this.selectedImagePreview = preview;
         this.attachmentImage.src = dataUrl;
         this.attachmentLabel.textContent = `${file.name || "Product photo"} · ready to search`;
         this.attachment.hidden = false;
@@ -643,11 +707,29 @@
     }
 
     clearImage(keepMode = false) {
+      this.imageSelectionGeneration = (this.imageSelectionGeneration || 0) + 1;
       this.selectedImage = null;
+      this.selectedImagePreview = null;
       this.imageInput.value = "";
       this.attachmentImage.src = "";
       this.attachment.hidden = true;
       if (!keepMode && !this.visionReady) this.setPlusMode("shop");
+    }
+
+    async makeImagePreview(dataUrl) {
+      return new Promise((resolve) => {
+        const image = new Image();
+        image.onload = () => {
+          try {
+            const scale = Math.min(1, 384 / Math.max(image.width, image.height));
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.max(1, Math.round(image.width * scale)); canvas.height = Math.max(1, Math.round(image.height * scale));
+            canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+            resolve(canvas.toDataURL('image/jpeg', .7));
+          } catch (_) { resolve(null); }
+        };
+        image.onerror = () => resolve(null); image.src = dataUrl;
+      });
     }
 
     async submitLegacyShoppingRequest(text) {
@@ -671,6 +753,16 @@
     }
 
     async submitPlusRequest(text) {
+      if (!this.plusBusy && !this.selectedImage && this.plusResultsVisible) {
+        const ordinal = String(text).match(/\b(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\b/ig) || [];
+        const choices = [...new Set(ordinal.map(word => ({first:1,second:2,third:3,fourth:4,fifth:5,'1st':1,'2nd':2,'3rd':3,'4th':4,'5th':5})[word.toLowerCase()]))];
+        if (choices.length === 1 && /\b(?:pick|choose|select|go for)\b/i.test(text) && !/\b(?:add|cart|open|page|compare)\b/i.test(text)) {
+          const choose = this.recommendationChoices?.get(choices[0]);
+          if (choose) { choose(); return; }
+          this.addMessage('assistant', 'Which product do you mean? Please give its name or choose a card.');
+          this.setState('clarifying'); return;
+        }
+      }
       if (this.missionProposal && /\b(?:stop|cancel|reject)\b|(?:don't|don’t|do not)\s+add/i.test(text)) {
         this.plusMissionExecuting = false;
         await this.submitPlusAction("reject");
@@ -699,7 +791,7 @@
       }
       try {
         await this.sendPlusPayload({ feature, text, ...(image ? { image } : {}) });
-        if (image) this.clearImage(true);
+        if (image && this.selectedImage === image) this.clearImage(true);
         this.setActivity(image ? "vision.analyzing" : "routing");
       } catch (_) {
         this.plusBusy = false;
@@ -714,12 +806,12 @@
       this.plusRequestId = requestId;
       this.client.revision = Math.max(Number(this.client.revision || 0), this.lastRevision) + 1;
       this.lastRevision = this.client.revision;
-      try { sessionStorage.setItem(this.revisionKey, String(this.lastRevision)); } catch (_) {}
+      try { sessionStorage.setItem(this.revisionKey, String(this.lastRevision)); } catch (_) { /* Best-effort cleanup or optional browser capability. */ }
       this.plusBusy = true;
       this.setState("interpreting");
       this.client.sendPlusRequest({
         ...payload,
-        conversation_context: this.messageHistory.slice(-12),
+        conversation_context: this.messageHistory.filter(entry => entry.text).slice(-12).map(({role,text}) => ({role,text})),
         page_context: this.pageContext,
         selected_product: this.selectedRecommendation ? {
           product_id: this.selectedRecommendation.product_id,
@@ -825,7 +917,8 @@
         if (["vision", "refine"].includes(event.feature) && event.status !== "error") this.visionReady = true;
       }
       if (event.proposal) {
-        this.conversation.insertBefore(this.proposalPanel, this.caption);
+        if (this.transcript && !this.proposalPanel.isConnected) this.transcript.addBlock(this.proposalPanel);
+        else if (!this.transcript) this.conversation.insertBefore(this.proposalPanel, this.caption);
         this.missionProposal = event.proposal;
         this.renderMissionProposal(event.proposal);
         if (event.status === "executing") {
@@ -915,12 +1008,20 @@
       if (!streamed) this.playback.complete?.(replyId);
     }
 
-    renderProducts(products, query = null) {
+    renderProducts(products, query = null, restored = null) {
       this.candidates = new CandidateSet(products);
+      const candidateSet = this.candidates;
+      const resultSetId = restored?.result_set_id || `cards_${crypto.randomUUID()}`;
+      this.activeCardResultSet = {id:resultSetId,products:candidateSet.products,query};
+      this.recommendationChoices = new Map();
+      const choices = this.recommendationChoices;
+      this.plusResultsVisible = true;
       this.selectedRecommendation = null;
       this.selectedRecommendationVariant = null;
-      this.cards.replaceChildren();
-      this.conversation.insertBefore(this.cards, this.caption);
+      this.cards = element('div', 'drake-cards');
+      this.cards.dataset.resultSetId = resultSetId;
+      if (this.transcript) this.transcript.addBlock(this.cards);
+      else this.conversation.insertBefore(this.cards, this.caption);
       this.candidates.products.forEach((product, index) => {
         const card = element("article", "drake-card");
         if (product.image_url) {
@@ -932,7 +1033,7 @@
               image.loading = "lazy"; image.referrerPolicy = "no-referrer";
               card.append(image);
             }
-          } catch (_) {}
+          } catch (_) { /* Best-effort cleanup or optional browser capability. */ }
         }
         card.append(element("h3", "drake-card__title", `${index + 1}. ${product.title}`));
         if (product.match_reason) card.append(element("p", "drake-card__variant", product.match_reason));
@@ -991,7 +1092,10 @@
           finally { prepare.disabled = false; }
         });
         selection.append(variantLabel, quantityLabel, prepare);
-        choose.addEventListener("click", () => {
+        const selectRecommendation = () => {
+          this.candidates = candidateSet;
+          this.activeCardResultSet = {id:resultSetId,products:candidateSet.products,query};
+          this.recommendationChoices = choices;
           this.selectedRecommendation = product;
           this.selectedRecommendationVariant = null;
           variants.value = ""; prepare.disabled = true;
@@ -999,7 +1103,9 @@
           this.setState("ready");
           this.addMessage("assistant", `Selected ${product.title}. Choose an option on this card, or tell me what you would like to do with it.`);
           variants.focus();
-        });
+        };
+        choose.addEventListener("click", selectRecommendation);
+        choices.set(index + 1, selectRecommendation);
         card.append(choose, selection);
         try {
           const path = product.handle ? `/products/${encodeURIComponent(product.handle)}` : product.url;
@@ -1011,9 +1117,13 @@
             link.addEventListener("click", () => { this.navigationInProgress = true; });
             card.append(link);
           }
-        } catch (_) {}
+        } catch (_) { /* Best-effort cleanup or optional browser capability. */ }
         this.cards.append(card);
       });
+      if (!restored) {
+        this.messageHistory.push({role:'assistant',text:'',products:candidateSet.products,query,result_set_id:resultSetId});
+        this.persistMessages();
+      }
     }
 
     async retrieveCatalogEvidence(query, turnId, requestRevision, toolName = "search_catalog", toolRequest = null) {
@@ -1076,7 +1186,7 @@
     async resumeNativeSearch() {
       if (this.nativeSearchResuming) return;
       let objective = null;
-      try { objective = JSON.parse(sessionStorage.getItem(this.nativeSearchKey) || "null"); } catch (_) {}
+      try { objective = JSON.parse(sessionStorage.getItem(this.nativeSearchKey) || "null"); } catch (_) { /* Best-effort cleanup or optional browser capability. */ }
       if (!objective || objective.schema_version !== "1.0.0") return;
       if (objective.shop_id !== (this.root.dataset.shopDomain || location.host) || objective.expires_at_ms < Date.now()) {
         sessionStorage.removeItem(this.nativeSearchKey);
@@ -1120,7 +1230,7 @@
         this.setOpen(true);
         this.privacy.textContent = "Your conversation paused during navigation. Press Resume conversation to continue hands-free.";
         this.conversationButton.textContent = "Resume conversation";
-      } catch (_) {}
+      } catch (_) { /* Best-effort cleanup or optional browser capability. */ }
     }
 
     async initializePageSearch() {
@@ -1275,11 +1385,11 @@
         let bridgeTools = [];
         try { if (includeStoreContext) {
           bridgeTools = typeof this.bridge.getAvailableTools === "function" ? await this.bridge.getAvailableTools() : [];
-        } } catch (_) {}
+        } } catch (_) { /* Best-effort cleanup or optional browser capability. */ }
         let catalogTools = [];
         try { if (includeStoreContext) {
           catalogTools = typeof this.catalog.getAvailableTools === "function" ? await this.catalog.getAvailableTools() : [];
-        } } catch (_) {}
+        } } catch (_) { /* Best-effort cleanup or optional browser capability. */ }
         const availableTools = [...new Set([...bridgeTools, ...catalogTools])].sort();
         
         const combinedProducts = [];
@@ -1293,11 +1403,14 @@
         if (catalogEvidence?.products) {
           catalogEvidence.products.forEach(addProduct);
         }
+        if (includeStoreContext && this.currentNativeSearch?.products) {
+          this.currentNativeSearch.products.forEach(addProduct);
+        }
         if (includeStoreContext && this.currentProductHandle && typeof this.catalog.getByHandle === "function") {
           try {
             const currentProduct = await this.catalog.getByHandle(this.currentProductHandle);
             if (currentProduct) addProduct(currentProduct);
-          } catch (_) {}
+          } catch (_) { /* Best-effort cleanup or optional browser capability. */ }
         }
         if (this.candidates?.products?.length) {
           this.candidates.products.forEach(addProduct);
@@ -1311,7 +1424,7 @@
         if (!existingTurn) {
           this.client.revision = turn.requestRevision;
           this.lastRevision = turn.requestRevision;
-          try { sessionStorage.setItem(this.revisionKey, String(this.lastRevision)); } catch (_) {}
+          try { sessionStorage.setItem(this.revisionKey, String(this.lastRevision)); } catch (_) { /* Best-effort cleanup or optional browser capability. */ }
           this.pendingTurn = turn;
         }
         const payload = {
@@ -1323,13 +1436,28 @@
           page_context: this.pageContext,
           context_phase: includeStoreContext ? "action" : "decision",
         };
-        if (!includeStoreContext && this.currentNativeSearch) {
+        const nativeCards = this.currentNativeSearch && (!this.activeCardResultSet ||
+          JSON.stringify(this.activeCardResultSet.products.map(p => String(p.product_id))) === JSON.stringify(this.currentNativeSearch.products.map(p => String(p.product_id))));
+        if (this.activeCardResultSet?.products?.length && !nativeCards) {
+          const shown = this.activeCardResultSet;
+          payload.evidence = {
+            snapshot_id: shown.id, shop_id: this.root.dataset.shopDomain || location.host,
+            currency: window.Shopify?.currency?.active || 'USD', observed_at_ms: Date.now(),
+            query: shown.query, products: includeStoreContext ? combinedProducts : shown.products,
+          };
+          payload.displayed_search = {schema_version:'1.0.0', adapter:'drake-recommendations-v1',
+            actual_url: `${location.pathname}${location.search}#${shown.id}`,
+            query:shown.query || 'Products displayed in Drake',sort_by:'relevance',rendered_count:shown.products.length,
+            ordered_product_ids:shown.products.map(product => String(product.product_id))};
+        }
+        if (nativeCards) {
           payload.evidence = {
             snapshot_id: `native_${Date.now()}`, shop_id: this.root.dataset.shopDomain || location.host,
             currency: window.Shopify?.currency?.active || "USD", observed_at_ms: Date.now(),
             query: this.currentNativeSearch.native_search.query, products: this.currentNativeSearch.products,
           };
-          payload.displayed_search = this.currentNativeSearch.native_search;
+          payload.displayed_search = {...this.currentNativeSearch.native_search,
+            ordered_product_ids:this.currentNativeSearch.products.map(p => String(p.product_id))};
         }
         if (includeStoreContext) {
           payload.evidence = {
@@ -1378,13 +1506,22 @@
         this.setState("failed", { error: "I couldn’t verify the cart update." });
       }
     }
-    addMessage(role, text) {
-      const message = element("p", `drake-message drake-message--${role}`, text);
-      this.conversation.insertBefore(message, this.caption);
-      this.conversation.scrollTop = this.conversation.scrollHeight;
-      this.messageHistory.push({ role, text: String(text || "") });
+    addMessage(role, text, attachment = null) {
+      const entry = {role,text:String(text || '')};
+      if (attachment && /^data:image\/(?:jpeg|png|webp);base64,/.test(attachment) && attachment.length < 200000) entry.attachment = attachment;
+      if (this.transcript) this.transcript.add(entry);
+      else {
+        const message = element("p", `drake-message drake-message--${role}`, text);
+        this.conversation.insertBefore(message, this.caption);
+      }
+      if (this.transcript) this.transcript.scrollToBottom();
+      else this.conversation.scrollTop = this.conversation.scrollHeight;
+      this.messageHistory.push(entry);
+      this.persistMessages();
+    }
+    persistMessages() {
       this.messageHistory = this.messageHistory.slice(-16);
-      try { sessionStorage.setItem(this.historyKey, JSON.stringify(this.messageHistory)); } catch (_) {}
+      try { sessionStorage.setItem(this.historyKey, JSON.stringify(this.messageHistory)); } catch (_) { /* Best-effort cleanup or optional browser capability. */ }
     }
   }
 

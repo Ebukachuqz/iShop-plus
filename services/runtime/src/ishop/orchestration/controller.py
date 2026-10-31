@@ -320,8 +320,11 @@ class ShoppingController:
             sess.previous_page = sess.current_page
             sess.current_page = dict(page_context)
         if displayed_search is not None:
-            ordered_ids = tuple(evidence.products)
-            if displayed_search.get("rendered_count") != len(ordered_ids):
+            supplied_ids = displayed_search.get("ordered_product_ids")
+            ordered_ids = tuple(supplied_ids) if isinstance(supplied_ids, list) else tuple(evidence.products)
+            if (not all(isinstance(product_id, str) and product_id in evidence.products for product_id in ordered_ids)
+                    or len(set(ordered_ids)) != len(ordered_ids)
+                    or displayed_search.get("rendered_count") != len(ordered_ids)):
                 return ControllerTurnResult(
                     session_id, turn_id, request_revision, page_epoch, "error",
                     "I could not validate the displayed store results.",
@@ -824,7 +827,7 @@ class ShoppingController:
             if ordinal < 1 or ordinal > len(product_ids):
                 return ControllerTurnResult(
                     session_id, turn_id, request_revision, page_epoch, "clarification_needed",
-                    "That result number is no longer available. Please choose from the current results.", intent,
+                    "Which product do you mean? Please give its name or choose one of the displayed cards.", intent,
                     reason="Ordinal reference is outside the active immutable result set",
                     clarification_options=tuple(str(index) for index in range(1, len(product_ids) + 1)),
                 )

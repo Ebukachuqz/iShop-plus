@@ -12,7 +12,7 @@
     "start": "react-router-serve ./build/server/index.js",
     "docker-start": "pnpm setup && pnpm start",
     "setup": "prisma generate && prisma migrate deploy",
-    "lint": "eslint --ignore-path .gitignore --cache --cache-location ./node_modules/.cache/eslint .",
+    "lint": "eslint --ignore-path .eslintignore --cache --cache-location ./node_modules/.cache/eslint .",
     "shopify": "shopify",
     "prisma": "prisma",
     "graphql-codegen": "graphql-codegen",
@@ -31,15 +31,16 @@
     "@react-router/node": "7.18.2",
     "@react-router/serve": "7.18.2",
     "@shopify/app-bridge-react": "^4.2.4",
+    "@shopify/cli": "4.8.0",
     "@shopify/shopify-app-react-router": "^1.2.1",
     "@shopify/shopify-app-session-storage-prisma": "^9.0.0",
+    "deep-chat": "2.5.1",
     "isbot": "^5.1.31",
     "prisma": "^6.16.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router": "7.18.2",
-    "vite-tsconfig-paths": "^5.1.4",
-    "@shopify/cli": "4.8.0"
+    "vite-tsconfig-paths": "^5.1.4"
   },
   "devDependencies": {
     "@shopify/api-codegen-preset": "^1.2.0",

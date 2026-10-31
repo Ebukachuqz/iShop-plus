@@ -185,7 +185,7 @@ Use [the demo checklist](DEMO_CHECKLIST.md) for the current Plus workflow/fronte
 
 ## Current limitations
 
-- Vision is attribute-based discovery, not an image-similarity index. JPEG/PNG/WebP uploads are limited to 4 MB and 16 million decoded pixels. Images are validated and not persisted as files or retained image bytes.
+- Vision is attribute-based discovery, not an image-similarity index. JPEG/PNG/WebP uploads are limited to 4 MB and 16 million decoded pixels. Full-resolution images are validated and are not persisted by the backend. The widget keeps a small submitted-photo thumbnail and recent recommendation cards in per-tab session storage so the conversation can survive navigation; these clear when that browser session ends.
 - Missions support two to four research scopes and one store currency. The budget covers the proposed basket subtotal before unverified tax, shipping, duties, and discounts.
 - Approval is tied to an exact, short-lived proposal. Material price/availability changes require a new proposal and approval. Multiple cart writes are serialized, not atomic; inspect actual cart state after any partial or uncertain outcome.
 - Plus session state is single-process memory; restarting clears pending interpretations and proposals. Durable Plus workflows and broader platform separation are future work.
@@ -253,3 +253,17 @@ Refresh the storefront after restarting development services. Drake deliberately
 ## License
 
 No open-source license has been granted for this repository. Unless a license file is added, the source remains subject to the repository owner's rights.
+
+### Chat interface and voice recovery
+
+Drake uses a pinned, self-hosted Deep Chat component for its transcript. Audio playback, signed WebSocket requests, product evidence, basket approvals, and cart verification remain under iShop control. To reproduce the vendored MIT-licensed asset after installing dependencies, run `pnpm vendor:chat`.
+
+**Record request** records one message; **Finish recording** submits it. **Live conversation** listens for successive requests until **End conversation** is pressed. A speech-provider failure stops the microphone locally and leaves text shopping available. Errors remain visible until dismissed. ElevenLabs credit or permission errors require correcting the account configuration; reconnecting cannot resolve billing failures.
+
+If a local Cloudflare tunnel repeatedly reports QUIC/UDP connection failures, restart that runtime tunnel using HTTP/2:
+
+```powershell
+cloudflared tunnel --protocol http2 --url http://127.0.0.1:8000
+```
+
+Save the new tunnel's WSS URL in the Drake app embed when its hostname changes. HTTP/2 can avoid UDP-specific issues; it cannot repair an unavailable internet connection.

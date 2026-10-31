@@ -13,8 +13,9 @@
     }
 
     connect() {
-      if (this.socket && this.socket.readyState <= 1) return Promise.resolve();
-      return new Promise((resolve, reject) => {
+      if (this.socket && this.socket.readyState === 1) return Promise.resolve();
+      if (this.connecting) return this.connecting;
+      this.connecting = new Promise((resolve, reject) => {
         const socket = new this.WebSocket(this.url);
         this.socket = socket;
         socket.onopen = () => {
@@ -24,10 +25,14 @@
         socket.onmessage = (message) => this._receive(message.data);
         socket.onerror = () => reject(new Error("voice_transport_failed"));
         socket.onclose = () => {
-          if (this.socket === socket) this.socket = null;
+          if (this.socket !== socket) return;
+          this.socket = null;
+          reject(new Error("voice_transport_closed"));
           this.onEvent({ type: "closed", revision: this.revision });
         };
       });
+      this.connecting.finally(() => { this.connecting = null; }).catch(() => {});
+      return this.connecting;
     }
 
     async startTurn(options) {
@@ -139,9 +144,11 @@
     }
 
     async start() {
+      this.stopped = false;
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error("microphone_unavailable");
       if (!window.AudioWorkletNode) throw new Error("audio_worklet_unavailable");
       this.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: this.channels, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      if (this.stopped) { this.stream.getTracks().forEach(track => track.stop()); this.stream = null; return; }
       this.context = new AudioContext({ sampleRate: this.sampleRate });
       const sourceCode = "class DrakePcmProcessor extends AudioWorkletProcessor { process(inputs) { const input = inputs[0]; if (input && input[0]) this.port.postMessage(input[0]); return true; } } registerProcessor('drake-pcm-processor', DrakePcmProcessor);";
       const sourceUrl = URL.createObjectURL(new Blob([sourceCode], { type: "application/javascript" }));
@@ -150,6 +157,7 @@
       } finally {
         URL.revokeObjectURL(sourceUrl);
       }
+      if (this.stopped) return;
       this.source = this.context.createMediaStreamSource(this.stream);
       this.node = new AudioWorkletNode(this.context, "drake-pcm-processor", { numberOfInputs: 1, numberOfOutputs: 1, channelCount: this.channels });
       this.node.port.onmessage = (event) => this._process(event.data);
@@ -209,6 +217,7 @@
     }
 
     stop(flush = false) {
+      this.stopped = true;
       if (flush) this._flush();
       else this.pendingBytes = new Uint8Array(0);
       this.preRoll = new Uint8Array(0);
@@ -392,7 +401,7 @@
       clearTimeout(this.timer); this.timer = null;
       for (const node of this.nodes) {
         node.onended = null;
-        try { node.stop(); } catch (_) {}
+        try { node.stop(); } catch (_) { /* Best-effort cleanup or optional browser capability. */ }
         node.disconnect();
       }
       this.nodes.clear();
@@ -569,7 +578,7 @@
       script.defer = true;
       document.head.appendChild(script);
     };
-    if (widgetUrl) {
+    const loadWidget = () => { if (widgetUrl) {
       const script = document.createElement("script");
       script.src = widgetUrl;
       script.onload = loadBootstrap;
@@ -577,6 +586,19 @@
       document.head.appendChild(script);
     } else {
       loadBootstrap();
-    }
+    } };
+    const dependencies = [root?.dataset.chatVendorUrl, root?.dataset.chatScriptUrl].filter(Boolean);
+    (async () => {
+      for (const url of dependencies) await new Promise((resolve, reject) => {
+        const script = document.createElement('script'); script.src = url;
+        if (url === root.dataset.chatVendorUrl) script.type = 'module';
+        script.onload = resolve; script.onerror = reject; document.head.appendChild(script);
+      });
+      loadWidget();
+    })().catch(() => {
+      root.dataset.bootstrapState = 'failed';
+      root.hidden = false;
+      root.textContent = 'Drake could not load its chat interface. Please refresh to retry.';
+    });
   }
 })();

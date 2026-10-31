@@ -178,6 +178,7 @@ def create_voice_app(
         plus_task: asyncio.Task | None = None
 
         async def process_plus(payload: dict, message_size: int) -> None:
+            nonlocal plus_task
             from ishop.plus import PlusError
             request_id = str(payload.get("request_id", ""))
             async def emit_plus(stage: str, label: str) -> None:
@@ -223,6 +224,10 @@ def create_voice_app(
                 context = plus_turns.get(request_id)
                 if context:
                     result.update(context)
+                # The workflow has finished computing this response. Release its
+                # slot before the browser can reply to the terminal event.
+                if plus_task is asyncio.current_task():
+                    plus_task = None
                 await websocket.send_json(result)
                 if (shopping_tts_handler is not None and context
                         and result.get("type") == "plus_result"
@@ -248,9 +253,26 @@ def create_voice_app(
                 "source": "shopping" if shopping else "speech",
             })
 
+        failed_speech_revision = None
+
+        async def fail_speech(active_session: RealtimeSpeechSession, code: str, failed_revision: int) -> None:
+            nonlocal session, failed_speech_revision
+            if failed_speech_revision == failed_revision:
+                return
+            failed_speech_revision = failed_revision
+            if session is active_session:
+                session = None
+            await websocket.send_json({"type": "error", "error_code": code,
+                                       "source": "speech", "request_revision": failed_revision,
+                                       "authorizes_interpretation": False})
+            await active_session.cancel()
+
         async def _pump_speech_events(active_session: RealtimeSpeechSession) -> None:
             try:
                 async for event in active_session.events():
+                    if event.kind == SpeechEventKind.ERROR:
+                        await fail_speech(active_session, event.error_code or "provider_stream_failed", event.revision)
+                        break
                     await websocket.send_json(_event_payload(event))
             except (asyncio.CancelledError, WebSocketDisconnect):
                 pass
@@ -378,12 +400,13 @@ def create_voice_app(
                     break
                 if message.get("bytes") is not None:
                     if session is None:
-                        await _send_error(websocket, "session_not_started")
+                        if failed_speech_revision is None or failed_speech_revision != revision:
+                            await _send_error(websocket, "session_not_started")
                         continue
                     try:
                         await session.send_audio(message["bytes"])
-                    except (SpeechProviderError, ValueError):
-                        await _send_error(websocket, "audio_rejected")
+                    except (SpeechProviderError, ConnectionClosed, RuntimeError, ValueError) as exc:
+                        await fail_speech(session, getattr(exc, "error_code", "provider_stream_failed"), revision)
                     continue
                 text = message.get("text")
                 if text is None:
@@ -421,6 +444,7 @@ def create_voice_app(
                     if session is not None:
                         await session.cancel()
                     revision = requested_revision
+                    failed_speech_revision = None
                     try:
                         session = make_session(
                             revision=revision,
@@ -435,7 +459,7 @@ def create_voice_app(
                             grant.asr_profile_id,
                             type(exc).__name__,
                         )
-                        await _send_error(websocket, "provider_start_failed")
+                        await _send_error(websocket, getattr(exc, "error_code", "provider_start_failed"))
                         if session is not None:
                             await session.cancel()
                         session = None
@@ -446,7 +470,8 @@ def create_voice_app(
                     await websocket.send_json(_event_payload(started))
                 elif action == "audio_base64":
                     if session is None:
-                        await _send_error(websocket, "session_not_started")
+                        if failed_speech_revision is None or failed_speech_revision != revision:
+                            await _send_error(websocket, "session_not_started")
                         continue
                     try:
                         audio = base64.b64decode(str(payload.get("audio", "")), validate=True)
@@ -455,8 +480,8 @@ def create_voice_app(
                         continue
                     try:
                         await session.send_audio(audio)
-                    except (SpeechProviderError, ValueError):
-                        await _send_error(websocket, "audio_rejected")
+                    except (SpeechProviderError, ConnectionClosed, RuntimeError, ValueError) as exc:
+                        await fail_speech(session, getattr(exc, "error_code", "provider_stream_failed"), revision)
                 elif action == "finish_turn":
                     if session is None:
                         await _send_error(websocket, "session_not_started")
@@ -718,15 +743,16 @@ def _validate_shopping_turn(payload: dict[str, Any], grant: SessionGrant) -> Non
             raise ValueError("Tool observation is too large")
     displayed = payload.get("displayed_search")
     if displayed is not None:
-        allowed_displayed = {"schema_version", "adapter", "actual_url", "query", "sort_by", "min_price", "max_price", "page", "rendered_count", "enrichment_failures"}
+        allowed_displayed = {"schema_version", "adapter", "actual_url", "query", "sort_by", "min_price", "max_price", "page", "rendered_count", "enrichment_failures", "ordered_product_ids"}
         if (not isinstance(displayed, dict) or set(displayed) - allowed_displayed
                 or displayed.get("schema_version") != "1.0.0"
-                or displayed.get("adapter") != "shopify-theme-product-grid-v1"
+                or displayed.get("adapter") not in {"shopify-theme-product-grid-v1", "drake-recommendations-v1"}
                 or not isinstance(displayed.get("query"), str)
                 or not displayed["query"].strip() or len(displayed["query"]) > 500
                 or not isinstance(displayed.get("actual_url"), str)
                 or not displayed["actual_url"].startswith("/") or displayed["actual_url"].startswith("//")
-                or not displayed["actual_url"].split("?", 1)[0].rstrip("/").endswith("/search")
+                or (displayed.get("adapter") == "shopify-theme-product-grid-v1"
+                    and not displayed["actual_url"].split("?", 1)[0].rstrip("/").endswith("/search"))
                 or displayed.get("sort_by") not in {"relevance", "price-ascending", "price-descending"}
                 or not isinstance(displayed.get("rendered_count"), int)
                 or displayed["rendered_count"] < 0 or displayed["rendered_count"] > 50
@@ -734,6 +760,11 @@ def _validate_shopping_turn(payload: dict[str, Any], grant: SessionGrant) -> Non
                 or displayed.get("enrichment_failures", 0) < 0
                 or displayed.get("enrichment_failures", 0) > displayed["rendered_count"]):
             raise ValueError("Invalid displayed search observation")
+        ids = displayed.get("ordered_product_ids")
+        if ids is not None and (not isinstance(ids, list) or len(ids) != displayed["rendered_count"]
+                                or not all(isinstance(value, str) and 0 < len(value) <= 200 for value in ids)
+                                or len(set(ids)) != len(ids)):
+            raise ValueError("Invalid displayed product identities")
 
 
 def _verify_reported_cart_result(command: dict[str, Any], result: dict[str, Any]) -> bool:

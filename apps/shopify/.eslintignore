@@ -3,3 +3,6 @@ build
 public/build
 */*.yml
 .shopify
+
+.react-router
+extensions/drake/assets/deep-chat-2.5.1.js

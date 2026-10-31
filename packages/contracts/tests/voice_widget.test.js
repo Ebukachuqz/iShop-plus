@@ -288,7 +288,7 @@ test('widget renders untrusted shopper and store text without HTML insertion', (
   assert.match(widgetSource, /Microphone access failed\. Type your request instead\./);
   assert.match(widgetSource, /shopping_runtime_failed/);
   assert.match(widgetSource, /shopping service failed while processing/);
-  assert.match(widgetSource, /Start conversation/);
+  assert.match(widgetSource, /Live conversation/);
   assert.match(widgetSource, /End conversation/);
   assert.match(widgetSource, /Correct transcript/);
   assert.match(widgetSource, /selected Pidgin voice could not start/);
@@ -707,7 +707,7 @@ test('text delivery and card presentation succeed independent of delayed or fail
   }));
 
   // Assert text message is rendered immediately
-  const assistantMessages = widget.messageHistory.filter((m) => m.role === 'assistant');
+  const assistantMessages = widget.messageHistory.filter((m) => m.role === 'assistant' && m.text);
   assert.equal(assistantMessages.length, 1);
   assert.equal(assistantMessages[0].text, 'Found 1 snowboard matching your search.');
 
@@ -960,4 +960,53 @@ test('cancelling playback rejects even a first late audio packet from that revis
   widget.client.revision=8;
   widget.handleVoiceEvent({...event,request_revision:8,reply_id:'new',reply_sequence:2});
   assert.equal(enqueued.length,1);
+});
+
+test('finish recording always resets local controls when disconnected', () => {
+  const {DrakeWidget} = loadWidgetState();
+  let stopped = 0; let state;
+  const widget = {captureGeneration:0,capture:{stop:()=>{stopped++;}},
+    client:{finishTurn:()=>{throw new Error('voice_not_connected');}},
+    micButton:{hidden:true},stopButton:{hidden:false},conversationButton:{hidden:true},endConversationButton:{hidden:true},
+    setState:(name,detail)=>{state={name,detail};},stopCaptureLocally:DrakeWidget.prototype.stopCaptureLocally};
+  DrakeWidget.prototype.finishListening.call(widget);
+  assert.equal(widget.capture,null); assert.equal(widget.stopButton.hidden,true);
+  assert.equal(widget.micButton.hidden,false); assert.ok(stopped >= 1);
+  assert.equal(state.name,'failed'); assert.match(state.detail.error,/Recording stopped/);
+});
+
+test('speech credit failure stops capture and survives a later closed event', () => {
+  const {DrakeWidget} = loadWidgetState();
+  const widget = {captureGeneration:0,capture:{stop(){}},client:{revision:3},
+    root:{dataset:{},setAttribute(){}},state:new (loadWidgetState().WidgetState)(),
+    statusText:{},error:{textContent:'',hidden:true},dismissErrorButton:{hidden:true},
+    micButton:{hidden:true},stopButton:{hidden:false},proposalPanel:{hidden:false},
+    stopCaptureLocally:DrakeWidget.prototype.stopCaptureLocally,
+    interruptPlayback(){},setState:DrakeWidget.prototype.setState};
+  DrakeWidget.prototype.handleVoiceEvent.call(widget,{type:'error',source:'speech',request_revision:3,error_code:'speech_insufficient_credits'});
+  assert.equal(widget.capture,null); assert.equal(widget.stopButton.hidden,true);
+  assert.match(widget.error.textContent,/insufficient credits/);
+  DrakeWidget.prototype.handleVoiceEvent.call(widget,{type:'closed'});
+  assert.match(widget.error.textContent,/insufficient credits/);
+  assert.equal(widget.error.hidden,false); assert.equal(widget.dismissErrorButton.hidden,false);
+});
+
+test('pick the second one selects a visible recommendation without a reasoning call', async () => {
+  const {DrakeWidget} = loadWidgetState();
+  let selected = false;
+  const widget = {plusResultsVisible:true,plusBusy:false,selectedImage:null,
+    recommendationChoices:new Map([[2,()=>{selected=true;}]]),sendPlusPayload(){throw new Error('unexpected model call');}};
+  await DrakeWidget.prototype.submitPlusRequest.call(widget,'Oh yeah, I will go for the second one. Pick the second one for me.');
+  assert.equal(selected,true);
+});
+
+test('submitted image preview is a message attachment, not just composer state', () => {
+  const {DrakeWidget} = loadWidgetState();
+  const entries=[];
+  const widget={messageHistory:[],conversation:{},transcript:{add:entry=>entries.push(entry),scrollToBottom(){}},persistMessages(){}};
+  DrakeWidget.prototype.addMessage.call(widget,'shopper','Find something like this','data:image/jpeg;base64,AAAA');
+  assert.equal(entries[0].attachment,'data:image/jpeg;base64,AAAA');
+  assert.equal(widget.messageHistory[0].attachment,'data:image/jpeg;base64,AAAA');
+  DrakeWidget.prototype.addMessage.call(widget,'shopper','bad attachment','javascript:alert(1)');
+  assert.equal(entries[1].attachment,undefined);
 });

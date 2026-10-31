@@ -140,12 +140,12 @@ def storefront_page(*, product: bool = False, search_products: list[tuple[str, s
 <cart-drawer id="CartDrawer" hidden aria-hidden="true"></cart-drawer>
 <div id="ishop-drake-root" data-shop-domain="{SHOP}" data-bootstrap-url="/bootstrap"
  data-search-url="/search"
- data-bootstrap-script-url="/assets/drake-bootstrap.js" data-bridge-script-url="/assets/drake-bridge.js"
+ data-bootstrap-script-url="/assets/drake-bootstrap.js" data-widget-script-url="/assets/drake-widget.js" data-chat-vendor-url="/assets/deep-chat-2.5.1.js" data-chat-script-url="/assets/drake-chat.js" data-bridge-script-url="/assets/drake-bridge.js"
  data-catalog-script-url="/assets/drake-catalog.js" data-voice-ws-url="ws://127.0.0.1:8765/ws"{product_data}></div>
 {search_grid}
-<script src="/assets/drake-voice.js"></script><script src="/assets/drake-widget.js"></script>
+<script src="/assets/drake-voice.js"></script>
 <script>document.querySelector('[data-cart-drawer-trigger]').addEventListener('click',()=>document.querySelector('cart-drawer').removeAttribute('hidden'));</script>
-<script src="/assets/drake-bootstrap.js"></script></body></html>""")
+</body></html>""")
 
 
 @app.get("/")

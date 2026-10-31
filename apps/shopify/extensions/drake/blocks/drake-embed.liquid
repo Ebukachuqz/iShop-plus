@@ -7,6 +7,8 @@
   data-current-product-handle="{% if product %}{{ product.handle }}{% endif %}"
   data-bootstrap-script-url="{{ 'drake-bootstrap.js' | asset_url }}"
   data-widget-script-url="{{ 'drake-widget.js' | asset_url }}"
+  data-chat-vendor-url="{{ 'deep-chat-2.5.1.js' | asset_url }}"
+  data-chat-script-url="{{ 'drake-chat.js' | asset_url }}"
   data-bridge-script-url="{{ 'drake-bridge.js' | asset_url }}"
   data-catalog-script-url="{{ 'drake-catalog.js' | asset_url }}"
   data-voice-ws-url="{{ block.settings.voice_ws_url | escape }}"

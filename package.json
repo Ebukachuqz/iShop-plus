@@ -10,6 +10,7 @@
     "pnpm": ">=9.0.0"
   },
   "scripts": {
+    "vendor:chat": "node scripts/vendor-chat.mjs",
     "bootstrap": "node scripts/command-dispatcher.mjs bootstrap",
     "dev": "node scripts/command-dispatcher.mjs dev",
     "dev:runtime": "python -m uv run --frozen --package ishop-runtime ishop-runtime",
