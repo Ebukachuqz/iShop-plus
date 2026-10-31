@@ -139,7 +139,7 @@ def image_payload():
 
 
 def test_image_decode_and_mime_and_invalid_input():
-    assert validate_image(image_payload())["mimeType"] == "image/png"
+    assert validate_image(image_payload())["mimeType"] == "image/jpeg"
     with pytest.raises(PlusError):
         validate_image({**image_payload(), "mime_type": "image/jpeg"})
     with pytest.raises(PlusError):
@@ -493,3 +493,42 @@ def test_signed_websocket_mission_uses_journal_and_verified_serial_results():
         payload["current_cart"] = cart.to_dict()
         ws.send_json(payload)
         assert until(ws, "plus_result")["status"] == "completed"
+
+
+def test_four_category_mission_and_optional_budget_schema():
+    spec = MissionSpec(
+        goal="Office",
+        currency="NGN",
+        tasks=[
+            {"category": name, "query": name}
+            for name in ("keyboard", "mouse", "monitor", "headphones")
+        ],
+    )
+    assert len(spec.tasks) == 4 and spec.budget is None
+
+
+def test_candidates_reject_excluded_attributes_and_fractional_currency():
+    assert not candidates([product()], "USD", {}, excluded=["Black"])
+    assert not candidates([product(price="20.001")], "USD", {})
+
+
+def test_catalog_failure_is_not_empty_search():
+    async def run():
+        workflow = PlusWorkflow(Model(), lambda: NOW)
+        await workflow.handle(request("mission"), grant(), emit)
+        with pytest.raises(PlusError, match="could not be read"):
+            await workflow.handle(
+                {
+                    "type": "plus_catalog_result",
+                    "request_id": "r1",
+                    "shop_id": SHOP,
+                    "observed_at_ms": NOW,
+                    "results": [
+                        {"agent_id": "research_1", "products": [], "error": "catalog_read_failed"}
+                    ],
+                },
+                grant(),
+                emit,
+            )
+
+    asyncio.run(run())

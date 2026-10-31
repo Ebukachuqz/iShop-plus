@@ -772,7 +772,7 @@
       this.setActivity(event.feature === "mission" ? "mission.researching" : "vision.searching");
       try {
         const results = [];
-        for (const task of (event.queries || []).slice(0, 3)) {
+        for (const task of (event.queries || []).slice(0, 4)) {
           const query = String(task.query || "").trim().slice(0, 200);
           if (!query || !task.agent_id) continue;
           try {

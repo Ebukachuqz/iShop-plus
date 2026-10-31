@@ -23,7 +23,7 @@ import warnings
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field
 
 from ishop.commerce.verifier import CartVerifier, ProposedCartAction, QuantityOperation
@@ -45,6 +45,10 @@ class VisionSpec(BaseModel):
     required_options: dict[str, str] = Field(default_factory=dict)
     max_price: str | None = None
     currency: str = Field(pattern=r"^[A-Z]{3}$")
+    search_terms: list[str] = Field(default_factory=list, max_length=4)
+    uncertainty: list[str] = Field(default_factory=list, max_length=8)
+    excluded_attributes: list[str] = Field(default_factory=list, max_length=8)
+    open_questions: list[str] = Field(default_factory=list, max_length=4)
 
 
 class ResearchTask(BaseModel):
@@ -53,19 +57,29 @@ class ResearchTask(BaseModel):
     query: str = Field(min_length=1, max_length=160)
     quantity: int = Field(default=1, ge=1, le=5, strict=True)
     required_options: dict[str, str] = Field(default_factory=dict)
+    excluded_attributes: list[str] = Field(default_factory=list, max_length=8)
+    preferences: list[str] = Field(default_factory=list, max_length=8)
 
 
 class MissionSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     goal: str = Field(min_length=1, max_length=500)
-    budget: str
+    budget: str | None = None
     currency: str = Field(pattern=r"^[A-Z]{3}$")
-    tasks: list[ResearchTask] = Field(min_length=2, max_length=3)
+    tasks: list[ResearchTask] = Field(default_factory=list, max_length=4)
+    open_questions: list[str] = Field(default_factory=list, max_length=4)
 
 
 class AgentChoice(BaseModel):
     model_config = ConfigDict(extra="forbid")
     variant_ids: list[str] = Field(default_factory=list, max_length=5)
+
+
+def exact_money(value: Any, currency: str) -> Money:
+    money = Money.from_string(str(amount(value)), currency)
+    if Money.from_minor_units(money.to_minor_units(), currency).amount != money.amount:
+        raise PlusError("Use the store currency's supported decimal precision.")
+    return money
 
 
 def amount(value: Any) -> Decimal:
@@ -98,6 +112,13 @@ def validate_image(image: dict[str, Any]) -> dict[str, str]:
                 picture.verify()
             with Image.open(io.BytesIO(raw)) as picture:
                 picture.load()
+                # Apply orientation before dropping all metadata. Send only bounded pixels,
+                # not EXIF/location data, animated frames, or the original encoded file.
+                clean = ImageOps.exif_transpose(picture).convert("RGB")
+                clean.thumbnail((1600, 1600))
+                output = io.BytesIO()
+                clean.save(output, format="JPEG", quality=88)
+                encoded = base64.b64encode(output.getvalue()).decode("ascii")
     except (
         binascii.Error,
         UnidentifiedImageError,
@@ -107,7 +128,7 @@ def validate_image(image: dict[str, Any]) -> dict[str, str]:
         Image.DecompressionBombWarning,
     ) as exc:
         raise PlusError("That image could not be decoded. Please choose another photo.") from exc
-    return {"mimeType": mime, "data": encoded}
+    return {"mimeType": "image/jpeg", "data": encoded}
 
 
 class GemmaClient:
@@ -160,7 +181,18 @@ class GemmaClient:
             try:
                 async with asyncio.timeout(35):
                     response = await asyncio.to_thread(self._post, payload)
-                content = response.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                if not isinstance(response, dict):
+                    raise ValueError("Invalid provider response")
+                choices = response.get("candidates") or []
+                if not choices:
+                    raise PlusError(
+                        "Gemma could not process that input. Please try another request."
+                    )
+                if choices[0].get("finishReason") == "MAX_TOKENS":
+                    raise PlusError("That request was too detailed. Try fewer requirements.")
+                content = choices[0].get("content", {}).get("parts", [])
+                if not isinstance(content, list) or any(not isinstance(p, dict) for p in content):
+                    raise ValueError("Invalid provider parts")
                 text = "".join(part.get("text", "") for part in content if not part.get("thought"))
                 text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
                 result = schema.model_validate_json(text)
@@ -173,7 +205,7 @@ class GemmaClient:
             except PlusError:
                 # Provider/auth failures are not malformed model output; keep the cause clear.
                 raise
-            except (ValueError, IndexError, KeyError):
+            except (ValueError, IndexError, KeyError, TypeError, AttributeError):
                 if attempt:
                     raise PlusError(
                         "I couldn't interpret that reliably. Please be more specific."
@@ -206,7 +238,7 @@ def _options_match(product: dict, variant: dict, required: dict[str, str]) -> bo
 
 
 def candidates(
-    products: list[dict], currency: str, required: dict, quantity=1, cap=None
+    products: list[dict], currency: str, required: dict, quantity=1, cap=None, excluded=()
 ) -> list[dict]:
     valid: list[dict] = []
     seen: set[str] = set()
@@ -231,10 +263,14 @@ def candidates(
             ):
                 continue
             price = variant.get("price", {})
+            if not isinstance(price, dict) or not isinstance(
+                variant.get("selected_options", {}), dict
+            ):
+                continue
             if price.get("currency") != currency:
                 continue
             try:
-                cost = amount(price["amount"])
+                cost = exact_money(price["amount"], currency).amount
             except (PlusError, KeyError):
                 continue
             stock = variant.get("quantity_available")
@@ -243,6 +279,19 @@ def candidates(
             if cap is not None and cost > cap:
                 continue
             if not _options_match(product, variant, required):
+                continue
+            attributes = " ".join(
+                [
+                    str(product.get("title", "")),
+                    str(variant.get("variant_title", "")),
+                    *map(str, variant.get("selected_options", {}).values()),
+                ]
+            ).casefold()
+            if any(
+                re.search(r"(?<!\w)" + re.escape(str(term).casefold()) + r"(?!\w)", attributes)
+                for term in excluded
+                if str(term).strip()
+            ):
                 continue
             seen.add(vid)
             valid.append(
@@ -347,7 +396,7 @@ class PlusWorkflow:
             await emit("mission.planning", "Planning your shopping list…")
             spec = await self.model.generate(
                 "You are a shopping mission coordinator. Divide the user's explicit request "
-                "into 2 or 3 distinct product-category research tasks. "
+                "into 2 to 4 distinct product-category research tasks. "
                 "Do not invent needed categories or a budget. If essential details are absent "
                 "return an empty object so the caller asks for clarification. "
                 "Only explicit must-have options belong in required_options; "
@@ -356,13 +405,23 @@ class PlusWorkflow:
                 f"Store currency {currency}. Prior plan: {json.dumps(previous)}. Request: {text}",
                 MissionSpec,
             )
-            if spec.currency != currency or amount(spec.budget) <= 0:
+            if spec.currency != currency:
                 raise PlusError(
                     f"Please give a positive subtotal budget in the store currency, {currency}."
                 )
-            money_budget = Money.from_string(spec.budget, currency)
+            if len(spec.tasks) < 2 or spec.open_questions:
+                return {
+                    "type": "plus_result",
+                    "request_id": request_id,
+                    "feature": mode,
+                    "status": "needs_clarification",
+                    "message": " ".join(spec.open_questions)
+                    or "Which two to four product categories should I research?",
+                }
+            money_budget = exact_money(spec.budget, currency) if spec.budget is not None else None
             if (
-                Money.from_minor_units(money_budget.to_minor_units(), currency).amount
+                money_budget is not None
+                and Money.from_minor_units(money_budget.to_minor_units(), currency).amount
                 != money_budget.amount
             ):
                 raise PlusError(
@@ -411,8 +470,12 @@ class PlusWorkflow:
         ):
             raise PlusError("The store results expired. Please try again.")
         results = payload.get("results")
-        if not isinstance(results, list) or len(results) > 3:
+        if not isinstance(results, list) or len(results) > 4:
             raise PlusError("The store results could not be verified.")
+        if any(isinstance(item, dict) and item.get("error") for item in results):
+            raise PlusError(
+                "The store catalogue could not be read. Please retry; nothing was added."
+            )
         by_agent = {
             item.get("agent_id"): item.get("products", [])
             for item in results
@@ -433,6 +496,7 @@ class PlusWorkflow:
                 spec["currency"],
                 spec["required_options"],
                 cap=amount(spec["max_price"]) if spec["max_price"] is not None else None,
+                excluded=spec.get("excluded_attributes", []),
             )
             # Rank only verified variants; model output can never introduce an identity.
             if options:
@@ -450,6 +514,14 @@ class PlusWorkflow:
             for option in options:
                 if option["product_id"] not in {p["product_id"] for p in products}:
                     product = dict(option["product"])
+                    valid_ids = {
+                        o["variant_id"] for o in options if o["product_id"] == option["product_id"]
+                    }
+                    product["variants"] = [
+                        v
+                        for v in product.get("variants", [])
+                        if str(v.get("variant_id")) in valid_ids
+                    ]
                     product["match_reason"] = (
                         "Approximate catalogue alternative; check product details before buying."
                     )
@@ -471,7 +543,11 @@ class PlusWorkflow:
         async def research(index, task):
             agent_id = state["tasks"][index]["agent_id"]
             options = candidates(
-                by_agent[agent_id], spec["currency"], task["required_options"], task["quantity"]
+                by_agent[agent_id],
+                spec["currency"],
+                task["required_options"],
+                task["quantity"],
+                excluded=task.get("excluded_attributes", []),
             )
             await emit("mission.agent.started", f"Researching {task['category']}…")
             choice = await self.model.generate(
@@ -501,7 +577,7 @@ class PlusWorkflow:
         )
         traces = [result[1] for result in researched]
         await emit("mission.validating", "Checking prices, stock, and budget…")
-        budget = amount(spec["budget"])
+        budget = amount(spec["budget"]) if spec["budget"] is not None else None
         feasible = []
         for combination in itertools.product(*(result[0][:5] for result in researched)):
             if len({item["variant_id"] for item in combination}) != len(combination):
@@ -514,7 +590,7 @@ class PlusWorkflow:
                 ),
                 0,
             )
-            if subtotal <= Money.from_string(str(budget), spec["currency"]).to_minor_units():
+            if budget is None or subtotal <= exact_money(budget, spec["currency"]).to_minor_units():
                 feasible.append((subtotal, combination))
         if not feasible:
             state["status"] = "completed"
@@ -536,7 +612,9 @@ class PlusWorkflow:
                 "amount": str(Money.from_minor_units(subtotal, spec["currency"]).amount),
                 "currency": spec["currency"],
             },
-            "budget": {"amount": str(budget), "currency": spec["currency"]},
+            "budget": {"amount": str(budget), "currency": spec["currency"]}
+            if budget is not None
+            else None,
             "expires_at_ms": self.clock() + 180_000,
             "tax_shipping_included": False,
         }
@@ -545,8 +623,12 @@ class PlusWorkflow:
         return self._result(
             state,
             "approval",
-            "Here's a verified basket within your subtotal budget. "
-            "Tax and shipping are excluded. Review it, then approve to add these items.",
+            (
+                "Here's a verified basket within your subtotal budget. "
+                if budget is not None
+                else "Here's an available basket. No budget limit was supplied. "
+            )
+            + "Tax and shipping are excluded. Review it, then approve to add these items.",
             proposal=proposal,
             agents=traces,
         )

@@ -15,7 +15,7 @@ import { authenticate } from "../shopify.server";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const configuration = await getMerchantConfiguration(session.shop);
-  return { configuration, profiles: profilesForBrowser() };
+  return { configuration, profiles: profilesForBrowser(), defaults: DEFAULT_SELECTION };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -50,14 +50,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function Index() {
-  const { configuration, profiles } = useLoaderData<typeof loader>();
+  const { configuration, profiles, defaults } = useLoaderData<typeof loader>();
   const result = useActionData<typeof action>();
   const value = result?.ok && result.configuration ? result.configuration : configuration;
   const fields: Array<{ role: ProviderRole; label: string; selected: string }> = [
-    { role: "asr", label: "Speech recognition", selected: DEFAULT_SELECTION.asr },
+    { role: "asr", label: "Speech recognition", selected: defaults.asr },
     { role: "llm", label: "Reasoning model", selected: value.llmProfileId },
     { role: "tts", label: "Drake voice", selected: value.ttsProfileId.startsWith("elevenlabs-")
-      ? value.ttsProfileId : DEFAULT_SELECTION.tts },
+      ? value.ttsProfileId : defaults.tts },
   ];
 
   return (
