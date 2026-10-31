@@ -1033,6 +1033,13 @@ test('a failed mission write retires approval and execution controls', async()=>
   assert.equal(widget.rejectMissionButton.disabled,true); assert.match(widget.approveMissionButton.textContent,/Basket stopped/);
 });
 
+test('mission progress stays out of transcript and audio',()=>{
+  const {widget}=makePlusWidget(); let messages=0; let speech=0;
+  widget.plusRequestId='r_progress'; widget.addMessage=()=>{messages++;}; widget.playTts=()=>{speech++;};
+  widget.handlePlusEvent({type:'plus_result',request_id:'r_progress',status:'executing',message:'Updating your approved basket…'});
+  assert.equal(messages,0); assert.equal(speech,0);
+});
+
 test('missing cart errors ask for inspection without exposing an internal provider message',()=>{
   const {shopperError}=loadWidgetState();
   assert.match(shopperError('The specified cart does not exist.'),/open your cart to check its contents/);

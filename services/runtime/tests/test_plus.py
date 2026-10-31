@@ -413,9 +413,15 @@ def test_signed_websocket_mission_uses_journal_and_verified_serial_results():
     journal._conn.row_factory = sqlite3.Row
     journal._init_db()
 
+    spoken = []
+
+    async def speak(text, revision, signed):
+        spoken.append(text)
+        return []
+
     async def record(command, result, verified, signed):
         assert workflow.command_finished(command, result, verified, signed)
-        return {"plus_mission": True}
+        return {"plus_mission": True, "spoken_response": "Per-item speech must stay internal"}
 
     app = create_voice_app(
         signing_secret=secret,
@@ -427,6 +433,7 @@ def test_signed_websocket_mission_uses_journal_and_verified_serial_results():
         plus_handler=workflow.handle,
         command_journal=journal,
         shopping_command_result_handler=record,
+        shopping_tts_handler=speak,
     )
     signed = SessionGrant.create_signed(
         grant_id="grant_mission",
@@ -473,7 +480,9 @@ def test_signed_websocket_mission_uses_journal_and_verified_serial_results():
             payload = approval(proposal, "approve" if index == 0 else "continue")
             payload["current_cart"] = cart.to_dict()
             ws.send_json(payload)
-            command = until(ws, "plus_result")["authorized_command"]
+            update = until(ws, "plus_result")
+            assert not update["message"]
+            command = update["authorized_command"]
             assert journal.get_entry(command["command_id"]).status == CommandStatus.DISPATCHED
             after = CartSnapshot(SHOP, "USD", (*cart.lines, CartLine(variant, 1)))
             ws.send_json(
@@ -487,13 +496,48 @@ def test_signed_websocket_mission_uses_journal_and_verified_serial_results():
                     },
                 }
             )
-            assert until(ws, "command_result_ack")["verified"]
+            ack = until(ws, "command_result_ack")
+            assert ack["verified"] and not ack.get("spoken_response")
             assert journal.get_entry(command["command_id"]).status == CommandStatus.VERIFIED_SUCCESS
             cart = after
         payload = approval(proposal, "continue")
         payload["current_cart"] = cart.to_dict()
         ws.send_json(payload)
-        assert until(ws, "plus_result")["status"] == "completed"
+        final = until(ws, "plus_result")
+        assert final["status"] == "completed"
+        until(ws, "shopping_tts_end")
+        assert spoken.count(final["message"]) == 1
+        assert "Per-item speech must stay internal" not in spoken
+
+
+@pytest.mark.parametrize('generated,expected',[
+    ('I added Black p1 (Black) and Black p2 (Black), one each, for 35.00 USD before shipping and tax.', True),
+    ('I added Black p1 and Black p2 for 999.00 USD.', False),
+])
+def test_completion_summary_uses_verified_basket_facts(generated, expected):
+    from ishop.plus import BasketSummary
+
+    class SummaryModel(Model):
+        async def generate(self,prompt,schema,image=None):
+            if schema is BasketSummary:
+                assert 'Verified facts:' in prompt and 'cannot execute tools' in prompt
+                return BasketSummary(message=generated)
+            return await super().generate(prompt,schema,image)
+
+    async def run():
+        workflow=PlusWorkflow(SummaryModel(),lambda:NOW)
+        proposal=(await mission(workflow))['proposal']
+        # Seed the verification boundary to isolate final wording validation.
+        state=workflow.sessions[(SHOP,'session_plus')]
+        state['status']='executing'; state['next_item']=len(proposal['items'])
+        action=approval(proposal,'continue')
+        action['current_cart']=CartSnapshot(SHOP,'USD',()).to_dict()
+        result=await workflow.handle(action,grant(),emit)
+        assert result['status']=='completed'
+        assert (result['message']==generated) is expected
+        assert '35 USD' in result['message'] or '35.00 USD' in result['message']
+        assert '999.00' not in result['message']
+    asyncio.run(run())
 
 
 def test_four_category_mission_and_optional_budget_schema():

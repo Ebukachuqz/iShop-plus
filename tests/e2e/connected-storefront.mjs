@@ -365,6 +365,7 @@ try {
   // A committed transcript uses exactly the same mission route as typed input.
   await evaluate("window.IShopDrake.handleVoiceEvent({type:'final_transcript', text:'Find three boards under 2500 USD'}); true");
   await waitFor(() => evaluate("Boolean(window.IShopDrake.missionProposal) && !window.IShopDrake.plusBusy"));
+  await evaluate("window.__beforeApprovalReplies=window.IShopDrake.transcript.view.getMessages().filter(m=>m.role==='ai' && m.text).length; true");
   await evaluate("window.IShopDrake.approveMissionButton.click(); true");
   await waitFor(() => evaluate("!window.IShopDrake.plusBusy && !window.IShopDrake.plusMissionExecuting && !window.IShopDrake.missionProposal"));
   cart = await evaluate("fetch('/cart.js').then(r=>r.json())");
@@ -372,6 +373,14 @@ try {
   check(cart.items.find(item => String(item.variant_id) === '101').quantity, 2, 'mission preserves preexisting quantity and adds approved delta');
   check(cart.items.find(item => String(item.variant_id) === '201').quantity, 1, 'mission second serial update verified');
   check(cart.items.find(item => String(item.variant_id) === '301').quantity, 1, 'mission third serial update verified');
+  check(await evaluate("window.IShopDrake.transcript.view.getMessages().filter(m=>m.role==='ai' && m.text).length - window.__beforeApprovalReplies"),1,'one final assistant response covers the whole approved mission');
+  check(await evaluate("document.querySelector('cart-drawer').querySelectorAll('.cart-item').length"),3,'closed cart drawer contents refresh without a page reload');
+  check(await evaluate("document.querySelector('cart-drawer').hidden"),true,'cart refresh does not force the drawer open');
+  const drawerTotal=cart.items.reduce((sum,item)=>sum+item.final_line_price,0);
+  check(Number(await evaluate("document.querySelector('[data-drawer-total]').textContent")),drawerTotal,'drawer subtotal matches actual cart before opening');
+  await evaluate("document.querySelector('[data-cart-drawer-trigger]').click(); true");
+  check(await evaluate("document.querySelector('cart-drawer').querySelectorAll('.cart-item').length"),3,'manual theme drawer opening shows the updated items');
+  await evaluate("document.querySelector('cart-drawer').hidden=true; true");
 
   check(await evaluate("window.__foreignCartCalls"),0,'mission keeps all reads and writes on the browser cart despite other APIs being present');
   const cartBeforeRejection=JSON.stringify(cart);

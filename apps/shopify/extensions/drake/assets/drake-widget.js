@@ -635,7 +635,7 @@
             Number(event.request_revision) < Number(receipt.request_revision)) return;
         this.pendingReceipts.delete(event.command_id);
         if (event.verified) {
-          if (event.spoken_response) this.addMessage("assistant", event.spoken_response);
+          if (event.spoken_response && !event.plus_mission) this.addMessage("assistant", event.spoken_response);
           if (receipt.result?.transport_used === "cart_drawer") this.setState("ready");
           else this.setState("completed", { verifiedReceipt: receipt.result });
           if (this.plusMissionExecuting && this.missionProposal) {
@@ -916,8 +916,8 @@
       }
       if (event.type !== "plus_result") return;
       const message = event.message || event.spoken_response;
-      if (message) this.addMessage("assistant", message);
-      this.playTts(event.tts_audio_chunks);
+      if (message && event.status !== 'executing') this.addMessage("assistant", message);
+      if (event.status !== 'executing') this.playTts(event.tts_audio_chunks);
       this.plusBusy = event.status === "executing";
       if (event.feature === "mission" && event.status !== "error") this.missionReady = true;
       if (Array.isArray(event.products)) {

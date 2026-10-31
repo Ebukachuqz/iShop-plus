@@ -602,6 +602,8 @@ def create_voice_app(
                                 "Your cart update was verified."
                                 if verified else "I could not verify that cart update."
                             )
+                    if verified and acknowledgement.get("plus_mission"):
+                        acknowledgement["spoken_response"] = ""
                     await websocket.send_json(acknowledgement)
                     if shopping_tts_handler is not None and acknowledgement.get("spoken_response"):
                         tts_payload = {

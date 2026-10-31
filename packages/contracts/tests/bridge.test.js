@@ -7,6 +7,32 @@ import { StandardActionsAdapter } from '../../../apps/shopify/extensions/drake/s
 import { WebMcpAdapter } from '../../../apps/shopify/extensions/drake/src/bridge/webmcp.js';
 import { StorefrontBridge } from '../../../apps/shopify/extensions/drake/src/bridge/bridge.js';
 
+test('theme section refresh preserves the drawer host and does not open it',async()=>{
+  let requested=''; let empty=null; let opens=0;
+  const drawer={innerHTML:'stale',contains:()=>false,querySelector:()=>null,
+    classList:{toggle:(_name,value)=>{empty=value;},contains:()=>false},open:()=>{opens++;}};
+  const fresh={innerHTML:'fresh lines and subtotal',querySelectorAll:()=>[{},{}]};
+  class Parser{parseFromString(){return {querySelector:()=>fresh};}}
+  const bridge=new StorefrontBridge({documentRef:{querySelector:()=>drawer,activeElement:null},
+    ajaxAdapter:{baseUrl:'/en'},DOMParserRef:Parser,
+    fetchRef:async url=>{requested=url;return {ok:true,json:async()=>({'cart-drawer':'theme HTML'})};}});
+  assert.equal(await bridge.refreshCartDrawer({lines:[{},{}]}),true);
+  assert.equal(requested,'/en/cart?sections=cart-drawer');
+  assert.equal(drawer.innerHTML,'fresh lines and subtotal'); assert.equal(empty,false); assert.equal(opens,0);
+});
+
+test('missing section HTML falls back to the cart page without opening stale content',async()=>{
+  let destination=''; let opened=false;
+  const drawer={innerHTML:'old',open:()=>{opened=true;}};
+  const bridge=new StorefrontBridge({documentRef:{querySelector:()=>drawer},origin:'https://shop.test',navigate:url=>{destination=url;},
+    webMcpAdapter:{isAvailable:()=>false},actionsAdapter:{isAvailable:()=>false},
+    ajaxAdapter:{readCart:async()=>({shop_id:'shop.test',currency:'USD',lines:[]})},
+    DOMParserRef:class{},fetchRef:async()=>({ok:true,json:async()=>({'cart-drawer':null})})});
+  const result=await bridge.executeCommand({operation:'navigate_storefront',parameters:{url:'/cart',presentation:'drawer_or_page'}});
+  assert.equal(result.transport_used,'navigation'); assert.equal(opened,false);
+  assert.equal(drawer.innerHTML,'old'); assert.equal(destination,'https://shop.test/cart');
+});
+
 describe('Storefront Bridge & Adapter Parity (T-16, S-06, S-10)', () => {
   test('show cart opens a recognized theme drawer before falling back to the cart page', async () => {
     let opened = 0;
@@ -18,6 +44,7 @@ describe('Storefront Bridge & Adapter Parity (T-16, S-06, S-10)', () => {
       ajaxAdapter: { readCart: async () => ({ shop_id: 'shop.test', currency: 'USD', lines: [] }) },
       webMcpAdapter: { isAvailable: () => false }, actionsAdapter: { isAvailable: () => false },
     });
+    bridge.refreshCartDrawer = async () => true;
     const receipt = await bridge.executeCommand({
       shop_id: 'shop.test', operation: 'navigate_storefront',
       parameters: { url: '/cart', presentation: 'drawer_or_page' },

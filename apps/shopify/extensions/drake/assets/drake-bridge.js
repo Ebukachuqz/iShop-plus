@@ -50,13 +50,47 @@ export function syncCartIndicators(cart, documentRef = typeof document !== 'unde
 }
 
 export class StorefrontBridge {
-  constructor({ ajaxAdapter = null, actionsAdapter = null, webMcpAdapter = null, navigate = null, origin = null, documentRef = null } = {}) {
+  constructor({ ajaxAdapter = null, actionsAdapter = null, webMcpAdapter = null, navigate = null, origin = null, documentRef = null, fetchRef = null, DOMParserRef = null } = {}) {
     this.ajax = ajaxAdapter || new AjaxCartAdapter();
     this.actions = actionsAdapter || new StandardActionsAdapter();
     this.webMcp = webMcpAdapter || new WebMcpAdapter();
     this.navigate = navigate || ((url) => window.location.assign(url));
     this.origin = origin || (typeof window !== 'undefined' ? window.location.origin : 'https://storefront.invalid');
     this.document = documentRef || (typeof document !== 'undefined' ? document : null);
+    this.fetch = fetchRef || (typeof window !== 'undefined' ? window.fetch.bind(window) : null);
+    this.DOMParser = DOMParserRef || (typeof DOMParser !== 'undefined' ? DOMParser : null);
+  }
+
+  async refreshCartDrawer(cart) {
+    const drawer = this.document?.querySelector?.('cart-drawer');
+    if (!drawer) return !this.document?.querySelector?.('[data-cart-drawer], #CartDrawer, .cart-drawer');
+    if (!this.fetch || !this.DOMParser) return false;
+    try {
+      const response = await this.fetch(`${this.ajax.baseUrl || ''}/cart?sections=cart-drawer`, {
+        headers: {Accept:'application/json'}, cache:'no-store', signal:AbortSignal.timeout(5000),
+      });
+      if (!response.ok) return false;
+      const sections = await response.json();
+      if (typeof sections['cart-drawer'] !== 'string') return false;
+      const parsed = new this.DOMParser().parseFromString(sections['cart-drawer'], 'text/html');
+      const fresh = parsed.querySelector('cart-drawer');
+      if (!fresh || fresh.querySelectorAll('.cart-item').length !== cart.lines.length) return false;
+      const activeId = drawer.contains(this.document.activeElement) ? this.document.activeElement.id : null;
+      // Preserve the custom-element host and its cart-icon listeners. The new
+      // section replaces line items, prices, totals, and empty-cart markup.
+      drawer.innerHTML = fresh.innerHTML;
+      drawer.classList.toggle('is-empty', cart.lines.length === 0);
+      drawer.querySelector('#CartDrawer-Overlay')?.addEventListener('click', () => drawer.close?.());
+      if (activeId) this.document.getElementById(activeId)?.focus?.();
+      if (drawer.classList.contains('active') && typeof this.document.defaultView?.trapFocus === 'function') {
+        const container = drawer.querySelector('#CartDrawer') || drawer;
+        this.document.defaultView.trapFocus(container, activeId ? this.document.getElementById(activeId) : container);
+      }
+      return true;
+    } catch (_) {
+      // UI refresh failure never retries a verified cart mutation.
+      return false;
+    }
   }
 
   _openCartDrawer() {
@@ -145,7 +179,7 @@ export class StorefrontBridge {
       if (destination.origin !== this.origin || !trustedPath) {
         return { ok: false, outcome: 'rejected', transport_used: 'navigation', errors: ['Navigation destination is not a trusted Shopify product or collection path'], before_cart: beforeCart, after_cart: beforeCart };
       }
-      if (pathname === '/cart' && command.parameters?.presentation === 'drawer_or_page' && this._openCartDrawer()) {
+      if (pathname === '/cart' && command.parameters?.presentation === 'drawer_or_page' && await this.refreshCartDrawer(beforeCart) && this._openCartDrawer()) {
         return { ok: true, outcome: 'navigation_handoff', transport_used: 'cart_drawer', errors: [], before_cart: beforeCart, after_cart: beforeCart };
       }
       this.navigate(destination.toString());
@@ -236,6 +270,7 @@ export class StorefrontBridge {
     }
 
     syncCartIndicators(afterCart);
+    const drawerRefreshed = await this.refreshCartDrawer(afterCart);
 
     return {
       ok: true,
@@ -244,6 +279,7 @@ export class StorefrontBridge {
       errors: [],
       before_cart: beforeCart,
       after_cart: afterCart,
+      drawer_refreshed: drawerRefreshed,
     };
   }
 

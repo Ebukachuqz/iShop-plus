@@ -203,7 +203,7 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         fallback, facts, intent_operation = _verified_command_response(command, result, verified)
         if selected_plus_workflow(grant).command_finished(command, result, verified, grant):
-            return {"status": "completed" if verified else "error", "spoken_response": fallback,
+            return {"status": "completed" if verified else "error", "spoken_response": "" if verified else fallback,
                     "plus_mission": True}
         if not verified:
             return {"status": "error", "spoken_response": fallback}

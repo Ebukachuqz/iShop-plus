@@ -114,9 +114,10 @@ plus_workflow = PlusWorkflow(FixturePlusModel())
 
 
 async def command_result(command, result, verified, grant):
-    plus_workflow.command_finished(command, result, verified, grant)
+    mission = plus_workflow.command_finished(command, result, verified, grant)
     return {"status": "completed" if verified else "error",
-            "spoken_response": "Verified test cart update." if verified else "Test cart update was not verified."}
+            "plus_mission": mission,
+            "spoken_response": "" if mission and verified else "Verified test cart update." if verified else "Test cart update was not verified."}
 
 
 app = create_voice_app(signing_secret=SECRET, allowed_origins={ORIGIN},
@@ -137,7 +138,7 @@ def storefront_page(*, product: bool = False, search_products: list[tuple[str, s
     return HTMLResponse(f"""<!doctype html><html><head><link rel="stylesheet" href="/assets/drake-bootstrap.css"></head><body>
 <a id="cart-icon-bubble" href="/cart"><span class="visually-hidden">Cart</span></a>
 <button type="button" data-cart-drawer-trigger aria-controls="CartDrawer">Open cart drawer</button>
-<cart-drawer id="CartDrawer" hidden aria-hidden="true"></cart-drawer>
+<cart-drawer id="CartDrawer" hidden aria-hidden="true"><p class="drawer-empty">Your cart is empty</p></cart-drawer>
 <div id="ishop-drake-root" data-shop-domain="{SHOP}" data-bootstrap-url="/bootstrap"
  data-search-url="/search"
  data-voice-script-url="/assets/drake-voice.js" data-bootstrap-script-url="/assets/drake-bootstrap.js" data-widget-script-url="/assets/drake-widget.js" data-chat-vendor-url="/assets/deep-chat-2.5.1.js" data-chat-script-url="/assets/drake-chat.js" data-bridge-script-url="/assets/drake-bridge.js"
@@ -202,7 +203,13 @@ async def checkout_page() -> HTMLResponse:
 
 
 @app.get("/cart")
-async def cart_page() -> HTMLResponse:
+async def cart_page(request: Request):
+    if request.query_params.get("sections") == "cart-drawer":
+        from html import escape
+        cart = await get_cart()
+        rows = "".join(f'<div class="cart-item">{escape(item["product_title"])}: {item["quantity"]}</div>' for item in cart["items"])
+        total = sum(item["final_line_price"] for item in cart["items"])
+        return JSONResponse({"cart-drawer": f'<cart-drawer><div id="CartDrawer-Overlay"></div>{rows}<p data-drawer-total>{total}</p></cart-drawer>'})
     return storefront_page()
 
 
