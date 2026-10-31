@@ -101,8 +101,8 @@ At minimum, configure:
 - `DEV_ALLOWED_SHOP_DOMAINS`
 - `DEV_ALLOWED_ORIGINS`
 - `SESSION_SIGNING_SECRET` with at least 32 random characters
-- `GEMINI_API_KEY` with hosted Gemma 4 access
-- `ISHOP_PLUS_GEMMA_MODEL=gemma-4-26b-a4b-it` (also supports `gemma-4-31b-it`)
+- `NVIDIA_API_KEY` and `ISHOP_PLUS_GEMMA_PROVIDER=nvidia` for hosted `google/gemma-4-31b-it`
+- Alternatively `ISHOP_PLUS_GEMMA_PROVIDER=google`, `GEMINI_API_KEY`, and `ISHOP_PLUS_GEMMA_MODEL` select the original Google route; its image requests failed in the tested account
 - `ISHOP_PLUS_VISION_ENABLED=true` and `ISHOP_PLUS_MISSIONS_ENABLED=true`
 - `ELEVENLABS_API_KEY`, `ISHOP_ENABLE_ELEVENLABS_REALTIME_STT=true`, and `ISHOP_ENABLE_ELEVENLABS_HTTP_TTS=true` for voice
 - Optionally `ELEVENLABS_VOICE_ID` for an account-accessible voice (Sarah is the verified default) and `ELEVENLABS_TTS_MODEL` (defaults to `eleven_flash_v2_5`)
@@ -112,7 +112,7 @@ Keep `.env` private. Provider credentials are server-side and must never be adde
 
 The runtime loads the repository-root `.env`; make the same relevant values available to the Shopify app process, using its own `.env` if your CLI configuration requires it. Use the exact current store origin. The supported interface is a Shopify Online Store theme with the Drake embed and browser commerce bridge; there is no cross-store search or WooCommerce adapter.
 
-Gemma calls the official `https://generativelanguage.googleapis.com/v1beta/models/<model>:generateContent` REST endpoint using a server-side key header. Typed output validation allows one bounded correction attempt; the new workflows never silently substitute another model. See [Google's Gemma API documentation](https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api). ElevenLabs uses [Scribe realtime transcription](https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime) and [streaming synthesis](https://elevenlabs.io/docs/api-reference/text-to-speech/stream) with 16 kHz mono PCM.
+Vision/Missions use the selected Gemma provider. NVIDIA calls `https://integrate.api.nvidia.com/v1/chat/completions` with server-side bearer authentication, compact JPEG image parts and SSE output. Typed validation allows one bounded schema correction; no automatic model/provider fallback occurs. The NVIDIA adapter limits output to 768 tokens and each attempt to approximately three minutes, since cold/queued requests were slow. Its image input is downscaled to at most 512 pixels per side: fine print and small visual details may be lost. Google remains an explicit alternative. See [NVIDIA's image API](https://docs.api.nvidia.com/nim/reference/google-gemma-4-31b-it-infer). ElevenLabs remains the exclusive live speech provider.
 
 ## Link and run the Shopify app
 
@@ -169,7 +169,7 @@ Choose **＋ Photo** to attach an image or **Missions** to enter a multi-item go
 
 Final verification completed at **19:48 UTC on 31 October 2026**: **425 tests passed** across **97 JavaScript, 19 Shopify, and 309 Python tests**. The Python total includes 270 runtime tests; the focused Plus suite passed **11/11**. `pnpm check:ci`, Shopify TypeScript validation, and new-file Ruff checks passed. These checks cover signed selection, retired-provider rejection, optional voice readiness, streaming plumbing, independent research, basket constraints, and approval/read-back safety with isolated fixtures.
 
-Current live-provider verification supersedes the earlier handoff: Gemma text planning works, but image requests on both configured Gemma 4 models return HTTP 400. Google's exact SDK/Files example also failed; the same key and public image passed a Gemini 3.8 diagnostic control. No Gemini fallback was enabled. **Vision is not currently live-ready.** See [the provider verification report](evals/reports/vision-provider-verification.md). ElevenLabs synthesis/transcription passed in the latest probe; microphone capture, audible browser playback, and connected-store cart operations still require live verification.
+Current live-provider verification supersedes the earlier Google-only result: **NVIDIA Gemma 4 31B successfully interpreted the public test image and returned validated Vision JSON.** The original Google route still returned HTTP 400; see [the historical Google report](evals/reports/vision-provider-verification.md) and [current NVIDIA verification](evals/reports/nvidia-gemma-verification.md). No Gemini fallback was enabled. Real-store matching/cart execution, microphone capture and audible browser playback remain separate live checks.
 
 ```bash
 python -m uv run --frozen --all-packages pytest services/runtime/tests/test_plus_voice_profiles.py services/runtime/tests/test_voice_provider_expansion.py services/runtime/tests/test_runtime_app.py
@@ -184,7 +184,7 @@ Use [the demo checklist](DEMO_CHECKLIST.md) for the current Plus workflow/fronte
 ## Current limitations
 
 - Vision is attribute-based discovery, not an image-similarity index. JPEG/PNG/WebP uploads are limited to 4 MB and 16 million decoded pixels. Images are validated and not persisted as files or retained image bytes.
-- Missions support two or three research scopes and one store currency. The budget covers the proposed basket subtotal before unverified tax, shipping, duties, and discounts.
+- Missions support two to four research scopes and one store currency. The budget covers the proposed basket subtotal before unverified tax, shipping, duties, and discounts.
 - Approval is tied to an exact, short-lived proposal. Material price/availability changes require a new proposal and approval. Multiple cart writes are serialized, not atomic; inspect actual cart state after any partial or uncertain outcome.
 - Plus session state is single-process memory; restarting clears pending interpretations and proposals. Durable Plus workflows and broader platform separation are future work.
 - Full page navigation can interrupt audio and uses the existing reconnection lifecycle. Browser microphone and autoplay permissions still apply.

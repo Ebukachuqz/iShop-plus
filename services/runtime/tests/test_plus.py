@@ -197,6 +197,7 @@ def test_vision_image_to_grounded_results_and_refinement():
         assert [p["product_id"] for p in result["products"]] == ["p1"]
         assert "authorized_command" not in result
         assert model.calls[0][2]
+        assert len(model.calls) == 1  # one eligible variant needs no comparison call
         await workflow.handle(request("refine", text="only black"), grant(), emit)
         assert not model.calls[-1][2]  # raw image is not retained
 

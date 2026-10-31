@@ -1,6 +1,6 @@
 """Opt-in real Gemma image diagnostic; no cart access or provider substitution.
 
-Run from repository root with the configured GEMINI_API_KEY, or local .env.
+Run from repository root with the selected provider credential, or local .env.
 Uses Google's public image fixture. Saves only status metadata, never image/key data.
 """
 
