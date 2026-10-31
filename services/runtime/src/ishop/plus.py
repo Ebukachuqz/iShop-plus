@@ -152,6 +152,16 @@ class GemmaClient:
                 return json.loads(response.read(1024 * 1024))
         except urllib.error.HTTPError as exc:
             logger.warning("Gemma request failed model=%s http=%s", self.model, exc.code)
+            if exc.code == 400 and any(
+                "inlineData" in part
+                for content in payload.get("contents", [])
+                for part in content.get("parts", [])
+            ):
+                raise PlusError(
+                    "Gemma couldn't process this photo right now. "
+                    "Switch to shopping chat to describe the product in text. "
+                    "No cart changes were made by this image request."
+                ) from None
             raise PlusError(
                 f"Gemma is unavailable (HTTP {exc.code}). Please try again shortly."
             ) from None

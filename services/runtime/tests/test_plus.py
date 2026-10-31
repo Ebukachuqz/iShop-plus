@@ -625,3 +625,29 @@ def test_mission_clarification_retains_prior_constraints():
         assert not workflow.locks
 
     asyncio.run(run())
+
+
+def test_image_http_400_is_actionable_and_does_not_expose_provider_body(monkeypatch):
+    import urllib.error
+
+    from ishop.plus import GemmaClient
+
+    calls = []
+
+    def fail(request, **kwargs):
+        calls.append(request)
+        raise urllib.error.HTTPError(
+            request.full_url,
+            400,
+            "Bad Request",
+            {},
+            io.BytesIO(b'{"error":{"message":"private provider details"}}'),
+        )
+
+    monkeypatch.setattr("ishop.plus.urllib.request.urlopen", fail)
+    client = GemmaClient(api_key="offline-test-key")
+    with pytest.raises(PlusError, match="describe the product in text") as error:
+        asyncio.run(client.generate("Photo", VisionSpec, validate_image(image_payload())))
+    assert len(calls) == 1
+    assert "private provider details" not in str(error.value)
+    assert calls[0].get_header("X-goog-api-key") == "offline-test-key"
