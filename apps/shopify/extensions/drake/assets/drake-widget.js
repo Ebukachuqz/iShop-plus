@@ -123,6 +123,7 @@
       this.nativeSearchKey = `ishop:native-search:${root.dataset.shopDomain || location.host}`;
       this.conversationResumeKey = `ishop:continuous-resume:${root.dataset.shopDomain || location.host}`;
       this.lastRevision = 0;
+      this.minimumAudioRevision = 0;
       this.lastScrollDirection = null;
       this.nativeSearchObserver = null;
       this.nativeSearchRefreshTimer = null;
@@ -318,18 +319,25 @@
       this.setState("ready");
       this.initializePageSearch();
     }
+    interruptPlayback() {
+      if (this.client) this.minimumAudioRevision = Math.max(this.minimumAudioRevision || 0, Number(this.client.revision || 0) + 1);
+      this.playback?.interrupt();
+    }
     setOpen(open) {
       this.open = Boolean(open);
+      if (this.open) this.playback?.unlock?.();
       this.panel.hidden = !this.open;
       this.launcher.setAttribute("aria-expanded", String(this.open));
       this.launcher.setAttribute("aria-label", this.open ? "Close Drake shopping assistant" : "Open Drake shopping assistant");
+      if (!this.open) this.interruptPlayback();
       if (!this.open && this.continuousMode) this.endConversation();
       if (this.open) this.textInput.focus();
     }
     async startConversation() {
+      this.playback?.unlock?.();
       if (!this.client || !this.voice || this.continuousMode) return;
       try {
-        if (this.playback) this.playback.interrupt();
+        if (this.playback) this.interruptPlayback();
         this.continuousMode = true;
         this.capture = new this.voice.PcmCapture({
           sampleRate: 16000, channels: 1, continuous: true,
@@ -352,7 +360,7 @@
     }
     beginContinuousUtterance() {
       if (!this.continuousMode) return;
-      if (this.playback) this.playback.interrupt();
+      if (this.playback) this.interruptPlayback();
       this.continuousAudioQueue = [];
       this.continuousTurn = this.client.startTurn({}).then(() => {
         this.lastRevision = this.client.revision;
@@ -391,7 +399,7 @@
       if (this.capture) this.capture.stop(false);
       this.capture = null; this.continuousMode = false; this.continuousTurn = null; this.continuousAudioQueue = [];
       if (this.client) this.client.cancelTurn();
-      if (this.playback) this.playback.interrupt();
+      if (this.playback) this.interruptPlayback();
       try { sessionStorage.removeItem(this.conversationResumeKey); } catch (_) {}
       this.micButton.hidden = false; this.stopButton.hidden = true;
       this.conversationButton.hidden = false; this.endConversationButton.hidden = true;
@@ -411,12 +419,13 @@
       return view;
     }
     async startListening() {
+      this.playback?.unlock?.();
       if (!this.client || !this.voice) {
         this.setState("failed", { error: "Voice is not connected. You can still type your request." });
         return;
       }
       try {
-        if (this.playback) this.playback.interrupt();
+        if (this.playback) this.interruptPlayback();
         await this.client.startTurn({});
         this.lastRevision = this.client.revision;
         try { sessionStorage.setItem(this.revisionKey, String(this.lastRevision)); } catch (_) {}
@@ -446,15 +455,16 @@
       if (this.capture) this.capture.stop();
       this.capture = null;
       if (this.client) this.client.cancelTurn();
-      if (this.playback) this.playback.interrupt();
+      if (this.playback) this.interruptPlayback();
       this.micButton.hidden = false;
       this.stopButton.hidden = true;
       this.setState("ready");
     }
     async submitText() {
+      this.playback?.unlock?.();
       const text = this.textInput.value.trim() || (this.selectedImage ? "Find products like this photo." : "");
       if (!text) return;
-      if (this.playback) this.playback.interrupt();
+      if (this.playback) this.interruptPlayback();
       this.textInput.value = "";
       this.addMessage("shopper", text);
       this.state.acceptFinal(text);
@@ -464,6 +474,7 @@
       else await this.submitShoppingRequest(text);
     }
     handleVoiceEvent(event) {
+      if (event.type === "authenticated") { this.playback?.resetSession?.(); return; }
       if (String(event.type || "").startsWith("plus_")) {
         this.handlePlusEvent(event);
       } else if (event.type === "partial_transcript") {
@@ -538,8 +549,13 @@
           this.setState("ready");
           this.pendingTurn = null;
         }
+      } else if (event.type === "shopping_tts_end") {
+        if (!this.client || Number(event.request_revision) !== Number(this.client.revision) || Number(event.page_epoch) !== Number(this.pageEpoch) || Number(event.request_revision) < Number(this.minimumAudioRevision || 0)) return;
+        this.playback?.complete?.(event.reply_id || null, Number(event.reply_sequence) || 0);
       } else if (event.type === "tts_unavailable") {
-        if (Number(event.request_revision) !== Number(this.client?.revision) || Number(event.page_epoch) !== Number(this.pageEpoch)) return;
+        if (Number(event.request_revision) !== Number(this.client?.revision) || Number(event.page_epoch) !== Number(this.pageEpoch) || Number(event.request_revision) < Number(this.minimumAudioRevision || 0)) return;
+        if (event.reply_id && this.playback?.beginReply && !this.playback.beginReply(event.reply_id, Number(event.reply_sequence) || 0)) return;
+        this.playback?.fail?.(event.reply_id || null, Number(event.reply_sequence) || 0);
         console.warn('[Drake] Spoken reply unavailable:', event.failure_code || 'unknown');
         this.audioStatus.textContent = event.failure_code === "session_initialization_error"
           ? "The selected Pidgin voice could not start. Your text reply is shown above."
@@ -548,8 +564,8 @@
           : "Spoken reply unavailable from the selected voice. Your text reply is shown above.";
         this.playButton.hidden = true;
       } else if (event.type === "shopping_tts") {
-        if (!this.client || Number(event.request_revision) !== Number(this.client.revision) || Number(event.page_epoch) !== Number(this.pageEpoch)) return;
-        this.playTts(event.tts_audio_chunks);
+        if (!this.client || Number(event.request_revision) !== Number(this.client.revision) || Number(event.page_epoch) !== Number(this.pageEpoch) || Number(event.request_revision) < Number(this.minimumAudioRevision || 0)) return;
+        this.playTts(event.tts_audio_chunks, event);
       } else if (event.type === "command_result_ack") {
         const receipt = this.pendingReceipts.get(event.command_id);
         // Late or duplicate acknowledgements must never regress a newer turn.
@@ -572,6 +588,7 @@
         }
         this.pendingTurn = null;
       } else if (event.type === "closed") {
+        this.interruptPlayback();
         this.plusBusy = false;
         this.plusMissionExecuting = false;
         this.plusRequestId = null;
@@ -872,8 +889,11 @@
       this.proposalPanel.append(controls);
     }
 
-    playTts(chunks) {
-      if (!this.playback || !Array.isArray(chunks)) return;
+    playTts(chunks, metadata = {}) {
+      if (!this.playback || !Array.isArray(chunks) || !chunks.length) return;
+      const streamed = Boolean(metadata.reply_id);
+      const replyId = metadata.reply_id || `embedded_${crypto.randomUUID()}`;
+      if (this.playback.beginReply && !this.playback.beginReply(replyId, Number(metadata.reply_sequence) || 0)) return;
       for (const chunk of chunks) {
         if (!chunk || typeof chunk.audio_base64 !== "string") continue;
         try {
@@ -892,6 +912,7 @@
           console.error('[Drake] Voice playback failed:', error);
         }
       }
+      if (!streamed) this.playback.complete?.(replyId);
     }
 
     renderProducts(products, query = null) {

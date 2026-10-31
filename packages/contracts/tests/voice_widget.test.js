@@ -30,6 +30,7 @@ function loadVoice(AudioOverride = null) {
     Blob,
     Audio: AudioOverride || FakeAudio,
     AudioBuffer: undefined,
+    setTimeout, clearTimeout,
   });
   return window.IShopVoiceSession;
 }
@@ -50,6 +51,7 @@ function loadWidgetState(customDoc, customWindow = {}, customLocation = null, cu
     sessionStorage: mockStorage,
     location: customLocation || { host: 'shop.myshopify.com', pathname: '/', search: '' },
     MutationObserver: customMutationObserver,
+    atob, btoa,
     setTimeout,
     clearTimeout,
     URL,
@@ -943,4 +945,19 @@ test('spoken basket approval is explicit and qualified replies remain refinement
   await widget.submitPlusRequest('Yes, but make it cheaper');
   assert.deepEqual(approvals, ['approve']);
   assert.equal(requests[0].feature, 'route');
+});
+
+
+test('cancelling playback rejects even a first late audio packet from that revision', () => {
+  const {widget}=makePlusWidget();
+  const enqueued=[];
+  widget.client.revision=7; widget.pageEpoch=1;
+  widget.playback={interrupt(){},beginReply:()=>true,enqueue:c=>enqueued.push(c),generation:0};
+  widget.interruptPlayback();
+  const event={type:'shopping_tts',request_revision:7,page_epoch:1,reply_id:'late-first',reply_sequence:1,
+    tts_audio_chunks:[{audio_base64:'AAAAAA==',format:'pcm',container:'none',sample_rate:16000,channels:1}]};
+  widget.handleVoiceEvent(event); assert.equal(enqueued.length,0);
+  widget.client.revision=8;
+  widget.handleVoiceEvent({...event,request_revision:8,reply_id:'new',reply_sequence:2});
+  assert.equal(enqueued.length,1);
 });

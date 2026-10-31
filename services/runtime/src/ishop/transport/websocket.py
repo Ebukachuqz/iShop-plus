@@ -257,7 +257,13 @@ def create_voice_app(
             except Exception as exc:
                 logger.debug("Speech event pump error: %s", exc)
 
+        tts_reply_sequence = 0
+
         async def deliver_tts(result: dict[str, Any], payload: dict[str, Any]) -> None:
+            nonlocal tts_reply_sequence
+            tts_reply_sequence += 1
+            reply_sequence = tts_reply_sequence
+            reply_id = f"tts_{secrets.token_hex(8)}"
             try:
                 if len(inspect.signature(shopping_tts_handler).parameters) >= 3:
                     output = shopping_tts_handler(  # type: ignore[misc]
@@ -281,6 +287,7 @@ def create_voice_app(
                     if serialized:
                         await websocket.send_json({
                             "type": "shopping_tts",
+                            "reply_id": reply_id, "reply_sequence": reply_sequence,
                             "turn_id": payload["turn_id"],
                             "request_revision": payload["request_revision"],
                             "page_epoch": payload["page_epoch"],
@@ -294,6 +301,11 @@ def create_voice_app(
                     chunks = await output
                     if chunks:
                         await send_chunks(chunks)
+                await websocket.send_json({
+                    "type": "shopping_tts_end", "turn_id": payload["turn_id"],
+                    "request_revision": payload["request_revision"], "page_epoch": payload["page_epoch"],
+                    "reply_id": reply_id, "reply_sequence": reply_sequence,
+                })
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -304,6 +316,7 @@ def create_voice_app(
                 if not failure_code or not failure_code.replace("_", "").isalnum():
                     failure_code = "provider_error" if hasattr(exc, "provider_name") else "synthesis_error"
                 await websocket.send_json({"type": "tts_unavailable", "turn_id": payload["turn_id"],
+                    "reply_id": reply_id, "reply_sequence": reply_sequence,
                     "request_revision": payload["request_revision"], "page_epoch": payload["page_epoch"],
                     "failure_code": failure_code[:64],
                     "retryable": bool(getattr(exc, "retryable", False))})

@@ -17,7 +17,7 @@ function spawnRuntime() {
   });
 }
 let runtime = spawnRuntime();
-const browser = spawn(chrome, ['--headless=new', '--disable-gpu', '--no-first-run', '--remote-debugging-port=9225', `--user-data-dir=${profile}`], { stdio: 'ignore' });
+const browser = spawn(chrome, ['--headless=new', '--disable-gpu', '--mute-audio', '--autoplay-policy=user-gesture-required', '--no-first-run', '--remote-debugging-port=9225', `--user-data-dir=${profile}`], { stdio: 'ignore' });
 
 const delay = (ms) => new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 async function waitFor(fn, timeout = 15000) {
@@ -73,6 +73,57 @@ try {
   await waitFor(() => evaluate("document.querySelector('#ishop-drake-root')?.dataset.bootstrapState === 'ready'"));
   await waitFor(() => evaluate("Boolean(window.IShopDrake?.client && window.IShopDrake?.bridge)"));
   await evaluate("document.querySelector('.drake-launcher').click(); true");
+
+  // Native Web Audio, with autoplay enforcement and muted physical output.
+  await evaluate(`(async () => {
+    const p = window.IShopDrake.playback;
+    window.__audioStates = []; window.__audioLayout = []; window.__audioStarts = [];
+    const status = p.onStatus;
+    p.onStatus = value => { status(value); window.__audioStates.push(value);
+      window.__audioLayout.push(document.querySelector('.drake-composer').getBoundingClientRect().y); };
+    const context = p._context();
+    await context.suspend();
+    const original = context.createBufferSource.bind(context);
+    context.createBufferSource = () => { const node = original(); const start = node.start.bind(node);
+      node.start = when => { window.__audioStarts.push({when,duration:node.buffer.duration}); start(when); }; return node; };
+    const samples = new Int16Array(16000).fill(8192);
+    window.__pcmBase64 = btoa(String.fromCharCode(...new Uint8Array(samples.buffer)));
+    const w = window.IShopDrake;
+    window.__deliverAudio = () => w.handleVoiceEvent({type:'shopping_tts',request_revision:w.client.revision,
+      page_epoch:w.pageEpoch,reply_id:'browser-audio',reply_sequence:1,
+      tts_audio_chunks:[{audio_base64:window.__pcmBase64,format:'pcm',container:'none',sample_rate:16000,channels:1}]});
+    window.__deliverAudio(); return true;
+  })()`);
+  await waitFor(() => evaluate("document.querySelector('#ishop-drake-root').dataset.audioState === 'blocked'"));
+  check(await evaluate("window.IShopDrake.playback.queue.length"), 1, 'autoplay block retains PCM data');
+  const playRect = await evaluate("(() => {const r=document.querySelector('.drake-play').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()");
+  await cdp('Input.dispatchMouseEvent', {type:'mousePressed',button:'left',clickCount:1,...playRect});
+  await cdp('Input.dispatchMouseEvent', {type:'mouseReleased',button:'left',clickCount:1,...playRect});
+  await waitFor(() => evaluate("document.querySelector('#ishop-drake-root').dataset.audioState === 'speaking'"));
+  check(await evaluate("getComputedStyle(document.querySelector('.drake-orb')).animationName"), 'none', 'speaking orb does not scale');
+  await evaluate("window.__deliverAudio(); window.__deliverAudio(); window.IShopDrake.handleVoiceEvent({type:'shopping_tts_end',request_revision:window.IShopDrake.client.revision,page_epoch:window.IShopDrake.pageEpoch,reply_id:'browser-audio',reply_sequence:1}); true");
+  await waitFor(() => evaluate("document.querySelector('#ishop-drake-root').dataset.audioState === 'idle'"));
+  check(await evaluate("window.__audioStarts.length"), 3, 'three PCM chunks use native scheduled buffers');
+  check(await evaluate("window.__audioStarts.slice(1).every((s,i)=>Math.abs(s.when-window.__audioStarts[i].when-window.__audioStarts[i].duration)<1e-8)"), true, 'native chunk timestamps are contiguous');
+  check(await evaluate("window.__audioStates.filter(s=>s==='speaking').length"), 1, 'speaking state does not flap between chunks');
+  check(await evaluate("Math.max(...window.__audioLayout)-Math.min(...window.__audioLayout)<0.5"), true, 'composer position stable across blocked/speaking/idle');
+  check(await evaluate("getComputedStyle(document.querySelector('.drake-orb')).animationName"), 'none', 'orb container never scales during audio');
+  await evaluate("(() => { const p=window.IShopDrake.playback;p.beginReply('interrupt-browser',2);const bytes=new Int16Array(16000);p.enqueue({audio:bytes.buffer,generation:p.generation,format:'pcm',container:'none',sampleRate:16000,channels:1});p.interrupt();return true;})()");
+  check(await evaluate("window.IShopDrake.playback.nodes.size"), 0, 'native interruption stops all scheduled audio');
+  check(await evaluate("window.IShopDrake.playback.beginReply('browser-audio',1)"), false, 'late reply cannot replay after interruption');
+  const rendered = await evaluate(`(async () => {
+    const offline = new OfflineAudioContext(1,16000,16000);
+    const wrapper = {state:'running',currentTime:0,destination:offline.destination,
+      createBuffer:offline.createBuffer.bind(offline),createBufferSource:offline.createBufferSource.bind(offline)};
+    const p = new window.IShopVoiceSession.AudioPlayback({contextFactory:()=>wrapper});
+    p.beginReply('offline',1);
+    for(let i=0;i<2;i++) p.enqueue({audio:new Int16Array(4000).fill(8192).buffer,generation:p.generation,format:'pcm',container:'none',sampleRate:16000,channels:1});
+    p.complete('offline',1);
+    const buffer=await offline.startRendering(); const data=buffer.getChannelData(0);
+    return {continuous:data.slice(960,8960).every(v=>Math.abs(v-.25)<1e-6),before:data[0],after:data[10000]};
+  })()`);
+  check(rendered.continuous, true, 'native rendered PCM has no inserted silence at chunk boundary');
+  check(rendered.before === 0 && rendered.after === 0, true, 'native renderer respects stream start and end');
 
   // CF-01: Greetings are conversational with zero side-effects
   await evaluate(`(() => {

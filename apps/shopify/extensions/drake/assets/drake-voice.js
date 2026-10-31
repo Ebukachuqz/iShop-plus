@@ -269,62 +269,244 @@
   class AudioPlayback {
     constructor(options = {}) {
       this.onStatus = options.onStatus || function () {};
+      this.contextFactory = options.contextFactory || (() => {
+        const Context = window.AudioContext || window.webkitAudioContext;
+        return Context ? new Context({sampleRate: 16000, latencyHint: "interactive"}) : null;
+      });
+      this.context = null;
       this.blocked = false;
       this.generation = 0;
       this.queue = [];
       this.active = null;
+      this.nodes = new Set();
+      this.nextTime = 0;
+      this.carry = new Uint8Array(0);
+      this.pcmFormat = null;
+      this.finished = false;
+      this.status = "idle";
+      this.timer = null;
+      this.replyId = null;
+      this.replySequence = 0;
+      this.retiredSequence = 0;
+      this.retiredIds = new Set();
+      this.started = false;
+    }
+
+    _status(value) {
+      if (this.status === value) return;
+      this.status = value;
+      this.onStatus(value);
+    }
+
+    beginReply(id, sequence = 0) {
+      if ((sequence && (sequence < this.replySequence || sequence <= this.retiredSequence)) || this.retiredIds.has(id)) return false;
+      if (id && id !== this.replyId) {
+        this.interrupt();
+        this.replyId = id;
+      }
+      this.replySequence = Math.max(this.replySequence, sequence || 0);
+      return true;
+    }
+
+    _context() {
+      if (!this.context || this.context.state === "closed") {
+        this.context = this.contextFactory();
+        const context = this.context;
+        if (context) context.onstatechange = () => {
+          if (this.context !== context) return;
+          if (context.state === "running") {
+            this.blocked = false;
+            if (this.nodes.size) this._status("speaking");
+            this._drain(true);
+          } else if (this.nodes.size || this.queue.length) {
+            this.blocked = true;
+            this._status("blocked");
+          }
+        };
+      }
+      return this.context;
+    }
+
+    // Invoke synchronously from a click/submit gesture, before any network await.
+    unlock() {
+      let context;
+      try { context = this._context(); } catch (_) { return Promise.resolve(false); }
+      if (!context) return Promise.resolve(false);
+      const generation = this.generation;
+      let resumed;
+      try { resumed = context.state === "running" ? Promise.resolve() : context.resume(); }
+      catch (_) { resumed = Promise.reject(new Error("audio_resume_failed")); }
+      return Promise.resolve(resumed).then(() => {
+        if (generation !== this.generation || context !== this.context) return false;
+        this.blocked = context.state !== "running";
+        if (this.blocked && (this.queue.length || this.nodes.size)) this._status("blocked");
+        else { if (this.nodes.size) this._status("speaking"); this._drain(true); }
+        return !this.blocked;
+      }).catch(() => {
+        if (generation === this.generation) {
+          this.blocked = true;
+          if (this.queue.length || this.nodes.size) this._status("blocked");
+        }
+        return false;
+      });
     }
 
     enqueue(chunk) {
-      if (!chunk || chunk.generation !== this.generation) return false;
+      if (!chunk || chunk.generation !== this.generation || this.finished) return false;
+      const size = this.queue.reduce((n, c) => n + c.audio.byteLength, 0);
+      if (!chunk.audio || size + chunk.audio.byteLength > 8 * 1024 * 1024) {
+        this.fail(); return false;
+      }
       this.queue.push(chunk);
-      this._playNext();
+      this._drain();
       return true;
+    }
+
+    complete(id = null, sequence = 0) {
+      if ((id && id !== this.replyId) || (sequence && sequence < this.replySequence)) return;
+      this.finished = true;
+      this._drain(true);
+      this._settle();
+    }
+
+    fail(id = null, sequence = 0) {
+      if ((id && id !== this.replyId) || (sequence && sequence < this.replySequence)) return;
+      this.interrupt();
+      this.finished = true;
+      this._status("unavailable");
     }
 
     interrupt() {
       this.blocked = false;
+      this.retiredSequence = Math.max(this.retiredSequence, this.replySequence);
+      if (this.replyId) this.retiredIds.add(this.replyId);
+      if (this.retiredIds.size > 32) this.retiredIds.delete(this.retiredIds.values().next().value);
+      this.started = false;
       this.generation += 1;
       this.queue = [];
+      this.finished = false;
+      this.replyId = null;
+      this.carry = new Uint8Array(0);
+      this.pcmFormat = null;
+      this.nextTime = 0;
+      clearTimeout(this.timer); this.timer = null;
+      for (const node of this.nodes) {
+        node.onended = null;
+        try { node.stop(); } catch (_) {}
+        node.disconnect();
+      }
+      this.nodes.clear();
       if (this.active) {
         URL.revokeObjectURL(this.active.src);
-        this.active.onended = null;
-        this.active.onerror = null;
-        this.active.pause();
-        this.active.src = "";
-        this.active = null;
+        this.active.onended = null; this.active.onerror = null;
+        this.active.pause(); this.active.src = ""; this.active = null;
       }
-      this.onStatus("idle");
+      this._status("idle");
     }
 
-    retry() { this.blocked = false; this._playNext(); }
+    resetSession() {
+      this.interrupt();
+      this.replySequence = 0; this.retiredSequence = 0; this.retiredIds.clear();
+    }
 
+    retry() {
+      if (this.queue[0] && !this._isPcm(this.queue[0])) {
+        this.blocked = false; this._playNext(); return;
+      }
+      return this.unlock();
+    }
+
+    _isPcm(chunk) {
+      return String(chunk.container || "").toLowerCase() === "none" &&
+        String(chunk.format || "").toLowerCase() === "pcm";
+    }
+
+    _settle() {
+      if (this.finished && !this.queue.length && !this.nodes.size && !this.active) {
+        if (this.carry.length) { this.carry = new Uint8Array(0); this._status("unavailable"); }
+        else if (this.status !== "unavailable") this._status("idle");
+      }
+    }
+
+    _drain(force = false) {
+      if (this.blocked || !this.queue.length) {
+        if (this.blocked && this.queue.length) this._status("blocked");
+        this._settle(); return;
+      }
+      if (!this._isPcm(this.queue[0])) { this._playNext(); return; }
+      let context;
+      try { context = this._context(); } catch (_) { this.fail(); return; }
+      if (!context) { this.fail(); return; }
+      if (context.state !== "running") { this.blocked = true; this._status("blocked"); return; }
+      // Brief jitter buffer, flushed immediately at EOF for short replies.
+      const pendingSeconds = this.queue.reduce((n,c) => n + c.audio.byteLength /
+        (2 * (c.channels || 1) * (c.sampleRate || 16000)), 0);
+      if (!force && !this.started && pendingSeconds < 0.24) {
+        if (!this.timer) this.timer = setTimeout(() => { this.timer = null; this._drain(true); }, 180);
+        return;
+      }
+      clearTimeout(this.timer); this.timer = null;
+      const generation = this.generation;
+      while (this.queue.length && this._isPcm(this.queue[0])) {
+        const chunk = this.queue.shift();
+        const rate = chunk.sampleRate || 16000, channels = chunk.channels || 1;
+        if (!Number.isInteger(rate) || rate < 8000 || rate > 96000 || ![1,2].includes(channels)) { this.fail(); return; }
+        const format = `${rate}:${channels}`;
+        if (this.pcmFormat && this.pcmFormat !== format) { this.fail(); return; }
+        this.pcmFormat = format;
+        const bytes = new Uint8Array(this.carry.length + chunk.audio.byteLength);
+        bytes.set(this.carry); bytes.set(new Uint8Array(chunk.audio), this.carry.length);
+        const length = bytes.byteLength - bytes.byteLength % (2 * channels);
+        this.carry = bytes.slice(length);
+        if (!length) continue;
+        try {
+          const frames = length / (2 * channels);
+          const buffer = context.createBuffer(channels, frames, rate);
+          const view = new DataView(bytes.buffer, 0, length);
+          for (let c = 0; c < channels; c++) {
+            const output = buffer.getChannelData(c);
+            for (let i = 0; i < frames; i++) output[i] = view.getInt16((i * channels + c) * 2, true) / 32768;
+          }
+          const start = Math.max(context.currentTime + (this.started ? 0.005 : 0.06), this.nextTime);
+          if (start + buffer.duration - context.currentTime > 60) { this.fail(); return; }
+          const node = context.createBufferSource();
+          node.buffer = buffer; node.connect(context.destination);
+          this.nextTime = start + buffer.duration;
+          this.nodes.add(node);
+          node.onended = () => {
+            node.disconnect();
+            if (generation !== this.generation) return;
+            this.nodes.delete(node); this._drain(true); this._settle();
+          };
+          node.start(start);
+          this.started = true;
+          this._status("speaking");
+        } catch (_) { this.fail(); return; }
+      }
+      this._settle();
+    }
+
+    // Compatibility for complete encoded clips; ElevenLabs live audio uses PCM above.
     _playNext() {
-      if (this.blocked || this.active || !this.queue.length) return;
+      if (this.blocked || this.active || this.nodes.size || !this.queue.length) return;
       const chunk = this.queue.shift();
-      const rawPcm = (chunk.container || "").toLowerCase() === "none" &&
-        (chunk.format || "").toLowerCase() === "pcm";
-      const playable = rawPcm
-        ? pcm16ToWav(chunk.audio, chunk.sampleRate || 16000, chunk.channels || 1)
-        : chunk.audio;
-      const mime = rawPcm ? "audio/wav" : "audio/" + (chunk.format || "wav");
-      const audio = new Audio(URL.createObjectURL(new Blob([playable], { type: mime })));
+      const audio = new Audio(URL.createObjectURL(new Blob([chunk.audio], { type: "audio/" + (chunk.format || "wav") })));
       this.active = audio;
       const finish = () => {
         if (this.active !== audio) return;
         URL.revokeObjectURL(audio.src); this.active = null;
-        this.onStatus("idle"); this._playNext();
+        if (this.queue.length) this._drain(true);
+        else if (!this.replyId) this._status("idle");
+        this._settle();
       };
       audio.onended = finish;
-      audio.onerror = () => { finish(); this.onStatus("unavailable"); };
-      audio.play().then(() => {
-        if (this.active === audio) this.onStatus("speaking");
-      }).catch((error) => {
+      audio.onerror = () => { if (this.active === audio) this.fail(); };
+      audio.play().then(() => { if (this.active === audio) this._status("speaking"); }).catch((error) => {
         if (this.active !== audio) return;
         URL.revokeObjectURL(audio.src); this.active = null;
         if (error?.name === "NotAllowedError") {
-          this.blocked = true; this.queue.unshift(chunk); this.onStatus("blocked");
-        } else { this.onStatus("unavailable"); this._playNext(); }
+          this.blocked = true; this.queue.unshift(chunk); this._status("blocked");
+        } else this.fail();
       });
     }
   }

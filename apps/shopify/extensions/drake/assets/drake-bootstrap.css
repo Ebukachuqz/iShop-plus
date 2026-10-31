@@ -132,7 +132,9 @@
 #ishop-drake-root .drake-orb__core { position: relative; color: #dcdcff; font-size: 1.8rem; font-weight: 400; letter-spacing: -.08em; text-shadow: 0 0 18px #9f81ff; }
 #ishop-drake-root[data-activity='working'] .drake-orb__ring { animation-duration: 5s; }
 #ishop-drake-root[data-activity='listening'] .drake-orb { animation: drake-orb-listen 1.8s ease-in-out infinite; }
-#ishop-drake-root[data-audio-state='speaking'] .drake-orb { animation: drake-orb-speak 1s ease-in-out infinite; }
+#ishop-drake-root[data-audio-state='speaking'] .drake-orb { animation: none; }
+#ishop-drake-root[data-audio-state='speaking'] .drake-orb::before { animation: drake-orb-speak 3s ease-in-out infinite; }
+#ishop-drake-root[data-audio-state='speaking'] .drake-orb__ring { animation-play-state: paused; }
 #ishop-drake-root[data-activity='error'] .drake-orb { filter: saturate(.25); }
 #ishop-drake-root[data-activity='error'] .drake-orb *, #ishop-drake-root[data-activity='error'] .drake-orb::before { animation: none; }
 #ishop-drake-root .drake-status { justify-content: center; min-height: 1.8rem; padding: .15rem 1rem .5rem; color: #a7adc2; background: transparent; font-size: .76rem; font-weight: 400; text-align: center; }
@@ -169,7 +171,7 @@
 @keyframes drake-orb-rotate { to { transform: rotate(360deg); } }
 @keyframes drake-orb-breathe { 50% { opacity: .55; transform: scale(1.03); } }
 @keyframes drake-orb-listen { 50% { transform: scale(1.04); } }
-@keyframes drake-orb-speak { 50% { transform: scale(1.06); filter: brightness(1.15); } }
+@keyframes drake-orb-speak { 50% { opacity: .55; } }
 @media (max-width: 32rem), (max-height: 740px) {
   #ishop-drake-root .drake-orb-surface { min-height: 100px; }
   #ishop-drake-root .drake-orb { width: 94px; height: 94px; }
@@ -197,3 +199,26 @@
 #ishop-drake-root .drake-card__prepare { color: #fff; background: #673dcc; border: 0;
   border-radius: .5rem; padding: .6rem; cursor: pointer; }
 #ishop-drake-root .drake-card__prepare:disabled { opacity: .5; cursor: default; }
+
+/* Audio/status transitions never change the widget's layout. */
+#ishop-drake-root .drake-audio-status { min-height: 1.25rem; line-height: 1.25rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#ishop-drake-root .drake-status { height: 2.25rem; flex-shrink: 0; box-sizing: border-box; }
+#ishop-drake-root .drake-status__text { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+#ishop-drake-root .drake-controls { position: relative; }
+#ishop-drake-root .drake-audio-status { min-height: 2rem; line-height: 2rem;
+  padding-right: 7.5rem; box-sizing: border-box; }
+#ishop-drake-root .drake-play { position: absolute; right: .75rem; bottom: .5rem; }
+
+#ishop-drake-root .drake-conversation { min-height: 0; flex: 1 1 0; }
+#ishop-drake-root .drake-header, #ishop-drake-root .drake-composer,
+#ishop-drake-root .drake-controls, #ishop-drake-root .drake-privacy { flex-shrink: 0; }
+@media (max-height: 560px) {
+  #ishop-drake-root .drake-orb-surface { display: none; }
+  #ishop-drake-root .drake-header { padding: .35rem .75rem; }
+  #ishop-drake-root .drake-icon-button { min-height: 2rem; }
+  #ishop-drake-root .drake-status { height: 1.75rem; min-height: 1.75rem; padding: 0 .75rem; }
+  #ishop-drake-root .drake-composer { padding: .35rem .75rem; }
+  #ishop-drake-root .drake-privacy { padding-bottom: .35rem; }
+}
