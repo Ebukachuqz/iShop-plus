@@ -13,6 +13,12 @@ export class StandardActionsAdapter {
     return Boolean(this.actionsApi && typeof this.actionsApi.updateCart === 'function');
   }
 
+  isWriteAvailable() {
+    // API presence does not establish that its cart matches this browser's
+    // Ajax cart/session. Keep writes on Ajax until that binding is validated.
+    return false;
+  }
+
   /** Translate an internal cart command into Shopify CartLineInput. */
   translateUpdateCartInput(command) {
     if (!command || typeof command !== 'object') throw new Error('Cart command is required');

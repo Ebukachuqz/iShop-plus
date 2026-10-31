@@ -258,6 +258,7 @@ describe('Storefront Bridge & Adapter Parity (T-16, S-06, S-10)', () => {
 
     const failingWebMcp = {
       isAvailable: () => true,
+      isWriteAvailable: () => true,
       readCart: async () => ({
         shop_id: 'store.myshopify.com',
         currency: 'USD',
@@ -454,4 +455,29 @@ describe('Storefront Bridge & Adapter Parity (T-16, S-06, S-10)', () => {
     assert.equal(receipt.outcome, 'navigation_handoff');
     assert.equal(visited[0], 'https://store.example/account/orders');
   });
+});
+
+test('unbound Actions and WebMCP carts cannot hijack the browser Ajax cart', async()=>{
+  const before={shop_id:'shop',currency:'USD',lines:[]}; let writes=0; let foreignReads=0; let actionWrites=0;
+  const bridge=new StorefrontBridge({
+    webMcpAdapter:{isAvailable:()=>true,isWriteAvailable:()=>false,readCart:async()=>{foreignReads++;return {...before,lines:[{variant_id:'other',quantity:9}]};}},
+    actionsAdapter:new StandardActionsAdapter({updateCart:async()=>{actionWrites++;return {userErrors:[{message:'The specified cart does not exist.'}]};}}),
+    ajaxAdapter:{readCart:async()=>writes?{...before,lines:[{variant_id:'v1',quantity:1,properties:{},selling_plan_id:null}]}:before,
+      addVariant:async()=>{writes++;return {ok:true};}},
+  });
+  assert.equal(bridge.detectPreferredTransport(),'ajax_cart');
+  const result=await bridge.executeCommand({operation:'add_variant',parameters:{variant_id:'v1',quantity:1}});
+  assert.equal(result.outcome,'verified_success'); assert.equal(result.transport_used,'ajax_cart');
+  assert.equal(writes,1); assert.equal(foreignReads,0); assert.equal(actionWrites,0);
+});
+
+test('a failed browser cart read cannot silently switch into another cart scope', async()=>{
+  let foreignReads=0; let writes=0;
+  const bridge=new StorefrontBridge({
+    webMcpAdapter:{isAvailable:()=>true,isWriteAvailable:()=>false,readCart:async()=>{foreignReads++;return {lines:[]};}},
+    actionsAdapter:{isAvailable:()=>false},
+    ajaxAdapter:{readCart:async()=>{throw new Error('Browser cart unavailable');},addVariant:async()=>{writes++;}},
+  });
+  await assert.rejects(bridge.executeCommand({operation:'add_variant',parameters:{variant_id:'v1',quantity:1}}),/Browser cart unavailable/);
+  assert.equal(foreignReads,0); assert.equal(writes,0);
 });

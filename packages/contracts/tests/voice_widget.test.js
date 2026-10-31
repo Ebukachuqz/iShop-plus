@@ -1018,3 +1018,22 @@ test('TTS quota failures explain credits instead of implying an invalid voice', 
   assert.match(widget.audioStatus.textContent,/Voice credits exhausted/);
   assert.equal(widget.playButton.hidden,true);
 });
+
+test('a failed mission write retires approval and execution controls', async()=>{
+  const {widget}=makePlusWidget(); let receipts=0;
+  widget.plusMissionExecuting=true; widget.plusBusy=true; widget.missionProposal={proposal_id:'p1'};
+  widget.approveMissionButton={disabled:false,textContent:'Adding approved basket…'};
+  widget.rejectMissionButton={disabled:false,textContent:'Stop remaining items'};
+  widget.editMissionButton={disabled:true};
+  widget.bridge={executeCommand:async()=>({outcome:'rejected',errors:['The specified cart does not exist.']})};
+  widget.client.sendCommandResult=()=>{receipts++;};
+  await widget.executeAuthorizedCommand({command_id:'cmd_fail',request_revision:1,operation:'add_variant'});
+  assert.equal(receipts,1); assert.equal(widget.plusMissionExecuting,false); assert.equal(widget.plusBusy,false);
+  assert.equal(widget.missionProposal,null); assert.equal(widget.approveMissionButton.disabled,true);
+  assert.equal(widget.rejectMissionButton.disabled,true); assert.match(widget.approveMissionButton.textContent,/Basket stopped/);
+});
+
+test('missing cart errors ask for inspection without exposing an internal provider message',()=>{
+  const {shopperError}=loadWidgetState();
+  assert.match(shopperError('The specified cart does not exist.'),/open your cart to check its contents/);
+});

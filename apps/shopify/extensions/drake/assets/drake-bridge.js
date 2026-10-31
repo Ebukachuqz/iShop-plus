@@ -84,12 +84,10 @@ export class StorefrontBridge {
   }
 
   detectPreferredTransport() {
-    if (this.webMcp.isAvailable() && (
-      typeof this.webMcp.isWriteAvailable !== 'function' || this.webMcp.isWriteAvailable()
-    )) {
+    if (this.webMcp.isAvailable() && this.webMcp.isWriteAvailable?.() === true) {
       return 'native_webmcp';
     }
-    if (this.actions.isAvailable()) {
+    if (this.actions.isAvailable() && this.actions.isWriteAvailable?.() === true) {
       return 'storefront_actions';
     }
     return 'ajax_cart';
@@ -105,25 +103,11 @@ export class StorefrontBridge {
     return [...available].sort();
   }
 
-  async readAuthoritativeCart() {
-    let webMcpError = null;
-    if (this.webMcp.isAvailable()) {
-      try {
-        const canRead = typeof this.webMcp.canReadCart !== 'function' || await this.webMcp.canReadCart();
-        if (canRead) return await this.webMcp.readCart();
-      } catch (error) {
-        webMcpError = error;
-      }
-    }
-
-    try {
-      return await this.ajax.readCart();
-    } catch (ajaxError) {
-      if (!webMcpError) throw ajaxError;
-      const error = new Error(`Store cart read failed via WebMCP and Ajax: ${webMcpError.message}; ${ajaxError.message}`);
-      error.cause = { webMcp: webMcpError, ajax: ajaxError };
-      throw error;
-    }
+  async readAuthoritativeCart(transport = this.detectPreferredTransport()) {
+    if (transport === 'native_webmcp') return this.webMcp.readCart();
+    // Do not combine a headless/WebMCP cart observation with an Ajax write.
+    // Ajax is the browser-session cart used by the supported theme integration.
+    return this.ajax.readCart();
   }
 
   async describeCart(cart) {
@@ -168,7 +152,8 @@ export class StorefrontBridge {
       return { ok: true, outcome: 'navigation_handoff', transport_used: 'navigation', errors: [], before_cart: beforeCart, after_cart: beforeCart };
     }
 
-    const beforeCart = await this.readAuthoritativeCart();
+    const transport = command.operation === 'clear_cart' ? 'ajax_cart' : this.detectPreferredTransport();
+    const beforeCart = await this.readAuthoritativeCart(transport);
     if (command.expected_cart_fingerprint) {
       const actualFingerprint = await this._fingerprintCart(beforeCart);
       if (actualFingerprint !== command.expected_cart_fingerprint) {
@@ -197,7 +182,6 @@ export class StorefrontBridge {
       return { ok: true, outcome: 'navigation_handoff', transport_used: 'navigation', errors: [], before_cart: beforeCart, after_cart: beforeCart };
     }
 
-    const transport = command.operation === 'clear_cart' ? 'ajax_cart' : this.detectPreferredTransport();
 
     // 1. Dispatch mutation according to preferred transport
     let mutationResult = null;
@@ -212,7 +196,7 @@ export class StorefrontBridge {
       }
     } catch (err) {
       // S-10 & T-16: A failed or uncertain write must NEVER be blindly retried on a fallback adapter!
-      const liveAfter = await this.readAuthoritativeCart();
+      const liveAfter = await this.readAuthoritativeCart(transport);
       return {
         ok: false,
         outcome: 'uncertain',
@@ -224,7 +208,7 @@ export class StorefrontBridge {
     }
 
     if (!mutationResult.ok) {
-      const liveAfter = await this.readAuthoritativeCart();
+      const liveAfter = await this.readAuthoritativeCart(transport);
       return {
         ok: false,
         outcome: 'rejected',
@@ -236,7 +220,7 @@ export class StorefrontBridge {
     }
 
     // 2. Authoritative post-mutation read-back (S-06, T-08, S-08, T-10)
-    const afterCart = await this.readAuthoritativeCart();
+    const afterCart = await this.readAuthoritativeCart(transport);
     const expectedCart = computeExpectedCart(beforeCart, command);
 
     const isMatch = isCartEquivalent(afterCart, expectedCart);

@@ -70,6 +70,9 @@
 
   function shopperError(detail) {
     const message = String(detail || "");
+    if (/specified cart does not exist|cart (?:was )?not found/i.test(message)) {
+      return "I couldn’t access the store cart. Please open your cart to check its contents before starting a new basket.";
+    }
     if (/changed before dispatch|refresh required|S-09/i.test(message)) {
       return "Your cart changed before I could update it, so I made no new change. Please try again.";
     }
@@ -266,7 +269,7 @@
       this.attachment.append(this.attachmentImage, this.attachmentLabel, this.removeImageButton);
       this.proposalPanel = element("div", "drake-proposal");
       this.proposalPanel.hidden = true;
-      this.conversation.insertBefore(this.proposalPanel, this.caption);
+      if (!this.transcript) this.conversation.insertBefore(this.proposalPanel, this.caption);
       const form = element("form", "drake-composer");
       this.textInput = element("input", "drake-text-input");
       this.textInput.type = "text";
@@ -639,6 +642,7 @@
             this.submitPlusAction("continue");
           }
         } else {
+          this.stopMissionBasket?.();
           this.plusMissionExecuting = false;
           if (event.spoken_response) this.addMessage("assistant", event.spoken_response);
           const detail = shopperError(receipt.result?.errors?.[0]);
@@ -867,8 +871,7 @@
           this.plusMissionExecuting = false;
         }
       } catch (_) {
-        this.plusBusy = false;
-        this.plusMissionExecuting = false;
+        this.stopMissionBasket();
         this.setState("failed", { error: "I couldn’t recheck this proposal. No further cart changes were requested. Please review your cart and try a new mission." });
       }
     }
@@ -923,10 +926,16 @@
         if (["vision", "refine"].includes(event.feature) && event.status !== "error") this.visionReady = true;
       }
       if (event.proposal) {
+        if (this.proposalPanel.dataset.proposalId && this.proposalPanel.dataset.proposalId !== event.proposal.proposal_id) {
+          this.stopMissionBasket();
+          this.proposalPanel = element('div', 'drake-proposal');
+        }
         if (this.transcript && !this.proposalPanel.isConnected) this.transcript.addBlock(this.proposalPanel);
         else if (!this.transcript) this.conversation.insertBefore(this.proposalPanel, this.caption);
         this.missionProposal = event.proposal;
+        this.proposalPanel.dataset.proposalId = event.proposal.proposal_id;
         this.renderMissionProposal(event.proposal);
+        this.plusBusy = event.status === 'executing';
         if (event.status === "executing") {
           this.approveMissionButton.disabled = true;
           this.approveMissionButton.textContent = "Adding approved basket…";
@@ -940,6 +949,7 @@
         this.setActivity("cart.updating");
         this.executeAuthorizedCommand(event.authorized_command);
       } else if (event.status === "error") {
+        this.stopMissionBasket();
         this.plusMissionExecuting = false;
         this.setState("failed", { suppressError: Boolean(message), error: message || "This request could not be completed." });
       } else {
@@ -969,7 +979,8 @@
       }
       for (const item of proposal.items || []) {
         const price = item.price || {};
-        this.proposalPanel.append(element("p", "drake-card__variant", `${item.quantity || 1} × ${item.title || item.product_title || item.product?.title || "Product"} · ${price.amount ?? item.unit_price ?? ""} ${price.currency || proposal.currency || ""} each`));
+        const variant = item.variant_title && item.variant_title !== 'Default Title' ? ` (${item.variant_title})` : '';
+        this.proposalPanel.append(element("p", "drake-card__variant", `${item.quantity || 1} × ${item.title || item.product_title || item.product?.title || "Product"}${variant} · ${price.amount ?? item.unit_price ?? ""} ${price.currency || proposal.currency || ""} each`));
       }
       const subtotal = proposal.subtotal || {};
       this.proposalPanel.append(element("p", "drake-proposal__total", `Subtotal: ${subtotal.amount ?? proposal.subtotal_amount ?? subtotal} ${subtotal.currency || proposal.currency || ""}`));
@@ -986,6 +997,21 @@
       const controls = element("div", "drake-proposal__controls");
       controls.append(this.approveMissionButton, this.rejectMissionButton, this.editMissionButton);
       this.proposalPanel.append(controls);
+    }
+
+    stopMissionBasket() {
+      this.plusBusy = false;
+      this.plusMissionExecuting = false;
+      this.missionProposal = null;
+      if (this.approveMissionButton) {
+        this.approveMissionButton.disabled = true;
+        this.approveMissionButton.textContent = 'Basket stopped — review your cart';
+      }
+      if (this.rejectMissionButton) {
+        this.rejectMissionButton.disabled = true;
+        this.rejectMissionButton.textContent = 'Stopped';
+      }
+      if (this.editMissionButton) this.editMissionButton.disabled = false;
     }
 
     playTts(chunks, metadata = {}) {
@@ -1506,9 +1532,11 @@
         } else if (result.outcome === "human_handoff" || result.outcome === "navigation_handoff") {
           this.setState("completed", { verifiedReceipt: result });
         } else {
+          if (this.plusMissionExecuting) this.stopMissionBasket();
           this.setState("failed", { error: shopperError(result.errors?.[0]) });
         }
       } catch (_) {
+        if (this.plusMissionExecuting) this.stopMissionBasket();
         this.setState("failed", { error: "I couldn’t verify the cart update." });
       }
     }

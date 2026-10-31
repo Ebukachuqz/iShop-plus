@@ -335,6 +335,7 @@ try {
   await waitFor(() => evaluate("Boolean(window.IShopDrake.missionProposal) && !window.IShopDrake.plusBusy"));
   check(await evaluate("window.IShopDrake.missionProposal.items[0].variant_id"), '102', 'Dawn variant identity preserved into proposal');
   check(await evaluate("window.IShopDrake.missionProposal.items[0].quantity"), 2, 'selected quantity preserved into proposal');
+  check(await evaluate("window.IShopDrake.proposalPanel.getRootNode().host?.localName === 'ishop-drake-block'"), true, 'basket is rendered inside its Deep Chat message');
   check((await evaluate("fetch('/cart.js').then(r=>r.json())")).items.length, 1, 'reviewing selection performs no cart write');
   await evaluate("window.IShopDrake.approveMissionButton.click(); true");
   await waitFor(() => evaluate("!window.IShopDrake.plusBusy && !window.IShopDrake.plusMissionExecuting && !window.IShopDrake.missionProposal"));
@@ -346,6 +347,14 @@ try {
   await waitFor(() => evaluate("location.pathname === '/products/complete-snowboard' && location.search === '?variant=102'"));
   await waitFor(() => evaluate("Boolean(window.IShopDrake?.client && window.IShopDrake?.bridge)"));
   await evaluate("document.querySelector('.drake-launcher').click(); true");
+  await evaluate(`(async () => {
+    const {StandardActionsAdapter}=await import('/assets/drake-standard-actions.js');
+    const {WebMcpAdapter}=await import('/assets/drake-webmcp.js');
+    window.__foreignCartCalls=0;
+    window.IShopDrake.bridge.actions=new StandardActionsAdapter({updateCart:async()=>{window.__foreignCartCalls++;return {userErrors:[{message:'The specified cart does not exist.'}]};}});
+    window.IShopDrake.bridge.webMcp=new WebMcpAdapter({getTools:async()=>[{name:'get_cart'}],executeTool:async()=>{window.__foreignCartCalls++;return {currency:'USD',lines:[]};}});
+    return true;
+  })()`);
   await submit('Build a three-board basket under 2500 USD');
   await waitFor(() => evaluate("Boolean(window.IShopDrake.missionProposal)"));
   check(await evaluate("window.IShopDrake.missionProposal.agents.length"), 3, 'three separately scoped research calls reach proposal');
@@ -363,6 +372,30 @@ try {
   check(cart.items.find(item => String(item.variant_id) === '101').quantity, 2, 'mission preserves preexisting quantity and adds approved delta');
   check(cart.items.find(item => String(item.variant_id) === '201').quantity, 1, 'mission second serial update verified');
   check(cart.items.find(item => String(item.variant_id) === '301').quantity, 1, 'mission third serial update verified');
+
+  check(await evaluate("window.__foreignCartCalls"),0,'mission keeps all reads and writes on the browser cart despite other APIs being present');
+  const cartBeforeRejection=JSON.stringify(cart);
+  await submit('Build a three-board basket under 2500 USD');
+  await waitFor(()=>evaluate("Boolean(window.IShopDrake.missionProposal) && !window.IShopDrake.plusBusy"));
+  await evaluate(`(() => {
+    const w=window.IShopDrake; window.__originalAdd=w.bridge.ajax.addVariant; window.__originalChange=w.bridge.ajax.changeLineQuantity;
+    window.__failedProposal=w.proposalPanel; window.__failedWrites=0;
+    w.bridge.ajax.addVariant=w.bridge.ajax.changeLineQuantity=async()=>{window.__failedWrites++;return {ok:false,errors:['The specified cart does not exist.']};};
+    w.approveMissionButton.click(); return true;
+  })()`);
+  try { await waitFor(()=>evaluate("window.IShopDrake.state.name === 'failed' && !window.IShopDrake.plusMissionExecuting && !window.IShopDrake.missionProposal")); }
+  catch(error){throw new Error(`${error.message}: ${JSON.stringify(await evaluate("({state:window.IShopDrake.state.name,busy:window.IShopDrake.plusBusy,executing:window.IShopDrake.plusMissionExecuting,proposal:window.IShopDrake.missionProposal,writes:window.__failedWrites,text:deepText(document.body)})"))}`);}
+  check(await evaluate("window.IShopDrake.approveMissionButton.disabled && window.IShopDrake.rejectMissionButton.disabled && !window.IShopDrake.plusBusy"),true,'rejected write retires mission controls and busy state');
+  check(await evaluate("window.__failedWrites"),1,'rejected basket never retries a write');
+  check(JSON.stringify(await evaluate("fetch('/cart.js').then(r=>r.json())")),cartBeforeRejection,'rejected mission leaves existing cart unchanged');
+  await evaluate("window.IShopDrake.bridge.ajax.addVariant=window.__originalAdd; window.IShopDrake.bridge.ajax.changeLineQuantity=window.__originalChange; true");
+  await submit('Build a three-board basket under 2500 USD');
+  await waitFor(()=>evaluate("Boolean(window.IShopDrake.missionProposal) && !window.IShopDrake.plusBusy"));
+  check(await evaluate("window.__failedProposal !== window.IShopDrake.proposalPanel && window.__failedProposal.querySelector('button').disabled"),true,'new basket cannot reactivate the previous failed approval');
+  await evaluate("window.IShopDrake.rejectMissionButton.click(); true");
+  await waitFor(()=>evaluate("!window.IShopDrake.missionProposal && !window.IShopDrake.plusBusy"));
+  check(JSON.stringify(await evaluate("fetch('/cart.js').then(r=>r.json())")),cartBeforeRejection,'new proposal rejection also preserves original cart');
+  await evaluate("document.querySelector('.drake-dismiss-error').click(); true");
 
   await submit('What is your return policy?', 'failed');
   check(await evaluate("document.querySelector('.drake-conversation').innerText.includes('safely choose') || document.querySelector('.drake-conversation').innerText.includes('unavailable')"), true, 'policy capability unavailable is honest');
