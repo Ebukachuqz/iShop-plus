@@ -1,8 +1,24 @@
-# iShop
+# iShop-plus
 
-iShop is an agentic voice-shopping assistant for Shopify. Its storefront assistant, **Drake**, helps shoppers find products, compare options, open product pages, manage their cart, inspect cart contents, and continue safely to Shopify checkout using natural speech or typed messages.
+iShop-plus extends [iShop](https://github.com/Ebukachuqz/iShop) with visual product discovery and shopping missions. Its storefront assistant, **Drake**, accepts a photo, a typed request, or speech and works with the current Shopify store's real catalogue. **Gemma 4** interprets images and coordinates product research; **ElevenLabs** handles live transcription and spoken replies.
 
 iShop is designed for shoppers who may not be comfortable navigating online stores, shoppers with accessibility needs, and anyone who finds it easier to describe what they want than to work through menus and filters. Drake supports English and Nigerian Pidgin interactions, including code-switched requests.
+
+## New in iShop-plus
+
+- **Vision:** attach a JPEG, PNG, or WebP product photo and add preferences to find up to five available catalogue alternatives. Refine with “only black” or a price cap. Results are approximate alternatives, never a claim of exact visual identity.
+- **Missions:** request two or three product categories and a subtotal budget. A Gemma coordinator creates separate scopes; independently invoked, read-only Gemma workers assess each category against actual catalogue candidates. A deterministic composer checks price, quantity, availability, and currency before proposing a basket.
+- **Approval and verification:** review, edit, reject, or explicitly approve the exact mission proposal. Approval rechecks products and the existing cart. Writes run serially through the established Shopify browser bridge and are verified afterward; existing cart items are preserved.
+- **Animated Drake:** a navy/violet/cyan orb shows listening, working, and speaking states. Its activity line follows real workflow/audio events, with a static reduced-motion fallback.
+- **Three input modes:** text, images, and ElevenLabs Scribe v2 Realtime speech. ElevenLabs streaming TTS supplies Drake's replies. Text and image inputs remain available if voice is unavailable.
+
+The existing Shopify app, signed sessions, FastAPI WebSocket runtime, browser commerce tools, and cart read-back verifier are retained. The new `ishop.plus` module adds bounded Vision/Missions orchestration; the existing widget adds photo ingress, proposals, and activity display. No broad platform rewrite is required. Product and variant identities come from store evidence, never model-created records. The original iShop repository is maintained separately.
+
+```text
+Drake photo/text/voice -> signed WebSocket -> Gemma 4 Plus workflow
+  -> current-store browser catalogue -> verified alternatives / basket proposal
+  -> explicit approval -> serial Shopify cart tools -> fresh cart read-back
+```
 
 ## What Drake can do
 
@@ -13,7 +29,7 @@ iShop is designed for shoppers who may not be comfortable navigating online stor
 - Add products, change quantities, remove lines, and show the cart.
 - Open supported cart drawers, navigate home or back, and scroll incrementally.
 - Hand the shopper over to Shopify checkout without entering payment details or placing the order.
-- Support manual recording and continuous voice conversations with merchant-selected speech, reasoning, and voice providers.
+- Support manual recording and continuous voice conversations using ElevenLabs, with independently selected ordinary-chat reasoning.
 
 Product, price, availability, variant, and cart claims come from Shopify evidence. Cart mutations are checked against the current cart and verified after execution before Drake reports success.
 
@@ -46,17 +62,17 @@ Install the following before starting:
 - [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) or another HTTPS/WSS tunnel for the local voice runtime
 - Credentials for the providers you intend to enable
 
-Sahara/Intron is the primary Nigerian Pidgin speech provider. The repository also contains supported profiles for Groq, AssemblyAI, ElevenLabs, and Gemini. Availability depends on credentials, account access, and the capability flags in `.env`.
+ElevenLabs is the only active iShop-plus speech provider. Legacy adapters and published evaluation reports remain for historical evaluation. Vision and Missions always use Gemma 4; the existing merchant reasoning choice applies to ordinary shopping chat. Voice availability depends on account credentials and its capability flags.
 
 ## Install dependencies
 
 ```bash
-git clone <repository-url>
-cd iShop
+git clone https://github.com/Ebukachuqz/iShop-plus.git
+cd iShop-plus
 corepack enable
 corepack prepare pnpm@9.15.4 --activate
 pnpm install
-python -m uv sync --frozen
+python -m uv sync --all-packages --group dev --frozen
 ```
 
 Alternatively, after pnpm and uv are installed:
@@ -85,10 +101,18 @@ At minimum, configure:
 - `DEV_ALLOWED_SHOP_DOMAINS`
 - `DEV_ALLOWED_ORIGINS`
 - `SESSION_SIGNING_SECRET` with at least 32 random characters
-- `SAHARA_API_KEY` for the default Sahara speech profile
-- The API keys for any additional provider profiles you want merchants to select
+- `GEMINI_API_KEY` with hosted Gemma 4 access
+- `ISHOP_PLUS_GEMMA_MODEL=gemma-4-26b-a4b-it` (also supports `gemma-4-31b-it`)
+- `ISHOP_PLUS_VISION_ENABLED=true` and `ISHOP_PLUS_MISSIONS_ENABLED=true`
+- `ELEVENLABS_API_KEY`, `ISHOP_ENABLE_ELEVENLABS_REALTIME_STT=true`, and `ISHOP_ENABLE_ELEVENLABS_HTTP_TTS=true` for voice
+- Optionally `ELEVENLABS_VOICE_ID` for an account-accessible voice (Sarah is the verified default) and `ELEVENLABS_TTS_MODEL` (defaults to `eleven_flash_v2_5`)
+- Existing `GEMINI_MODEL` or `GROQ_API_KEY` configuration for the ordinary shopping-chat reasoning profile
 
 Keep `.env` private. Provider credentials are server-side and must never be added to the theme extension or committed to Git.
+
+The runtime loads the repository-root `.env`; make the same relevant values available to the Shopify app process, using its own `.env` if your CLI configuration requires it. Use the exact current store origin. The supported interface is a Shopify Online Store theme with the Drake embed and browser commerce bridge; there is no cross-store search or WooCommerce adapter.
+
+Gemma calls the official `https://generativelanguage.googleapis.com/v1beta/models/<model>:generateContent` REST endpoint using a server-side key header. Typed output validation allows one bounded correction attempt; the new workflows never silently substitute another model. See [Google's Gemma API documentation](https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api). ElevenLabs uses [Scribe realtime transcription](https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime) and [streaming synthesis](https://elevenlabs.io/docs/api-reference/text-to-speech/stream) with 16 kHz mono PCM.
 
 ## Link and run the Shopify app
 
@@ -96,6 +120,7 @@ Authenticate Shopify CLI if needed, then link this checkout to your Shopify app:
 
 ```bash
 pnpm --filter @ishop/shopify-app config:link
+pnpm --filter @ishop/shopify-app setup
 ```
 
 Start the voice runtime in the first terminal:
@@ -133,10 +158,37 @@ Follow Shopify CLI's prompts to select the development store and install or upda
 3. Enable **Drake voice shopping**.
 4. Set **Voice runtime WebSocket URL** to the secure runtime URL from the previous step, ending in `/ws`.
 5. Save the theme.
-6. Open the installed iShop app in Shopify Admin and select the desired speech recognition, reasoning, and voice profiles.
+6. Open the installed iShop-plus app in Shopify Admin and review ElevenLabs speech/voice and the ordinary-chat reasoning profile.
 7. Open the storefront in a fresh tab and allow microphone access when testing voice.
 
 Provider-setting changes apply to new shopper sessions. Refresh the storefront after changing a profile or restarting either development service.
+
+Choose **＋ Photo** to attach an image or **Missions** to enter a multi-item goal. Voice transcripts follow the selected feature mode. Review the factual basket before using its explicit approval button. A missing speech credential leaves text/image shopping available and reports voice failure honestly.
+
+## Verification and demonstration
+
+Final verification completed at **19:48 UTC on 31 October 2026**: **425 tests passed** across **97 JavaScript, 19 Shopify, and 309 Python tests**. The Python total includes 270 runtime tests; the focused Plus suite passed **11/11**. `pnpm check:ci`, Shopify TypeScript validation, and new-file Ruff checks passed. These checks cover signed selection, retired-provider rejection, optional voice readiness, streaming plumbing, independent research, basket constraints, and approval/read-back safety with isolated fixtures.
+
+Actual Gemma image interpretation using a generated PNG fixture and an actual mission-coordinator request both succeeded. ElevenLabs Sarah synthesis returned **138,206 PCM bytes**; feeding that generated speech through Scribe v2 Realtime returned the exact sentence “Your shopping list is ready. Please review your basket before approving.” This confirms provider synthesis/transcription, not microphone capture or audible browser playback. Public Shopify access redirected to the storefront password page; live catalogue/cart validation is reserved for the owner's authenticated storefront demonstration.
+
+```bash
+python -m uv run --frozen --all-packages pytest services/runtime/tests/test_plus_voice_profiles.py services/runtime/tests/test_voice_provider_expansion.py services/runtime/tests/test_runtime_app.py
+python -m uv run --frozen --all-packages pytest services/runtime/tests tests evals/tests -q
+pnpm --filter @ishop/shopify-app test
+```
+
+Use [the demo checklist](DEMO_CHECKLIST.md) for the current Plus workflow/frontend results, live-provider checks, and a recording sequence. Fixture passes are not a claim of live Gemma, audible browser playback, or connected-store success.
+
+[Submission summary](SUBMISSION.md) describes the new contribution and the remaining video, license, and connected-demo fields.
+
+## Current limitations
+
+- Vision is attribute-based discovery, not an image-similarity index. JPEG/PNG/WebP uploads are limited to 4 MB and 16 million decoded pixels. Images are validated and not persisted as files or retained image bytes.
+- Missions support two or three research scopes and one store currency. The budget covers the proposed basket subtotal before unverified tax, shipping, duties, and discounts.
+- Approval is tied to an exact, short-lived proposal. Material price/availability changes require a new proposal and approval. Multiple cart writes are serialized, not atomic; inspect actual cart state after any partial or uncertain outcome.
+- Plus session state is single-process memory; restarting clears pending interpretations and proposals. Durable Plus workflows and broader platform separation are future work.
+- Full page navigation can interrupt audio and uses the existing reconnection lifecycle. Browser microphone and autoplay permissions still apply.
+- Demonstrate products that actually exist and are available in the configured store; no sample catalogue is silently substituted.
 
 ## Local development commands
 
@@ -174,9 +226,13 @@ Confirm that the runtime and tunnel are both running and that the theme app embe
 
 Confirm that its API key and corresponding `ISHOP_ENABLE_*` capability flag are configured. Restart the Shopify app and runtime, then begin a new shopper session.
 
-### Sahara voice sessions fail with a WebSocket protocol error
+### ElevenLabs voice is unavailable
 
-The runtime reports the provider failure without authorizing a shopping action. For a development demonstration, select another enabled realtime speech provider while the upstream Sahara connection is unavailable.
+Verify the ElevenLabs key has transcription and synthesis permissions, the capability flags are enabled, and `ELEVENLABS_VOICE_ID` identifies a voice accessible to that account. Sarah is the live-verified default. The former Rachel voice returned HTTP 402 on the tested account; a key alone does not guarantee access to every voice. Text/image input stays available when speech fails.
+
+### Ordinary chat reports that reasoning is unavailable
+
+The ordinary-chat Gemini 3.8 probe returned HTTP 503 during verification. Groq GPT OSS 120B handled the corresponding greeting successfully. For the current demonstration, select **Groq GPT OSS 120B** for ordinary shopping chat with a configured `GROQ_API_KEY`. Vision and Missions continue to use **Gemma 4** independently; the source ordinary-chat default has not been changed.
 
 ### Product or cart data appears stale
 
