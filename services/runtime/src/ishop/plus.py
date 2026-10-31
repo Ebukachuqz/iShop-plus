@@ -320,11 +320,20 @@ class PlusWorkflow:
         self.clock = clock or (lambda: int(time.time() * 1000))
         self.sessions: dict[tuple[str, str], dict] = {}
         self.locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self.lock_users: dict[tuple[str, str], int] = {}
 
     async def handle(self, payload: dict, grant, emit) -> dict:
         key = (grant.shop_id, grant.anonymous_session_id)
-        async with self.locks.setdefault(key, asyncio.Lock()):
-            return await self._handle(payload, grant, emit)
+        lock = self.locks.setdefault(key, asyncio.Lock())
+        self.lock_users[key] = self.lock_users.get(key, 0) + 1
+        try:
+            async with lock:
+                return await self._handle(payload, grant, emit)
+        finally:
+            self.lock_users[key] -= 1
+            if not self.lock_users[key]:
+                self.lock_users.pop(key, None)
+                self.locks.pop(key, None)
 
     async def _handle(self, payload: dict, grant, emit) -> dict:
         if not grant.is_valid_at(self.clock()):
@@ -335,9 +344,25 @@ class PlusWorkflow:
             raise PlusError("Please resend that request.")
         key = (grant.shop_id, grant.anonymous_session_id)
         state = self.sessions.get(key)
-        if state and self.clock() - state["created_at"] > 600_000:
+        if state and not state.get("in_flight") and self.clock() - state["created_at"] > 600_000:
             self.sessions.pop(key, None)
             state = None
+        if feature == "cancel":
+            if state and state.get("in_flight"):
+                state["request_id"] = request_id
+                state["cancel_after_current"] = True
+                return self._result(
+                    state,
+                    "canceling",
+                    "The current cart action may finish. No further items will be added.",
+                )
+            self.sessions.pop(key, None)
+            return {
+                "type": "plus_result",
+                "request_id": request_id,
+                "status": "cancelled",
+                "message": "Request cancelled. No further cart actions will be sent.",
+            }
         if feature in {"approve", "continue", "reject"}:
             return await self._approval(payload, grant, state, emit)
         if payload.get("type") == "plus_catalog_result":
@@ -398,7 +423,7 @@ class PlusWorkflow:
                 "You are a shopping mission coordinator. Divide the user's explicit request "
                 "into 2 to 4 distinct product-category research tasks. "
                 "Do not invent needed categories or a budget. If essential details are absent "
-                "return an empty object so the caller asks for clarification. "
+                "return the schema with open_questions and any known tasks for clarification. "
                 "Only explicit must-have options belong in required_options; "
                 "query is broad catalog search text. budget is a decimal string. "
                 "Preserve earlier constraints unless changed. No tools here may mutate a cart. "
@@ -410,6 +435,13 @@ class PlusWorkflow:
                     f"Please give a positive subtotal budget in the store currency, {currency}."
                 )
             if len(spec.tasks) < 2 or spec.open_questions:
+                self.sessions[key] = {
+                    "feature": mode,
+                    "request_id": request_id,
+                    "created_at": self.clock(),
+                    "spec": spec.model_dump(),
+                    "status": "draft",
+                }
                 return {
                     "type": "plus_result",
                     "request_id": request_id,
@@ -428,15 +460,18 @@ class PlusWorkflow:
                     "Please give a budget using the store currency's supported decimal precision."
                 )
             if len({t.category.casefold() for t in spec.tasks}) != len(spec.tasks):
-                raise PlusError("Please request two or three distinct product categories.")
+                raise PlusError("Please request two to four distinct product categories.")
             tasks = [
                 {"agent_id": f"research_{i + 1}", "query": task.query}
                 for i, task in enumerate(spec.tasks)
             ]
         now = self.clock()
         # Bound temporary session memory; no uploaded image bytes are retained.
-        if len(self.sessions) >= 100:
-            oldest = min(self.sessions, key=lambda k: self.sessions[k]["created_at"])
+        if key not in self.sessions and len(self.sessions) >= 100:
+            evictable = [k for k, value in self.sessions.items() if not value.get("in_flight")]
+            if not evictable:
+                raise PlusError("Shopping is busy. Please try again shortly.")
+            oldest = min(evictable, key=lambda k: self.sessions[k]["created_at"])
             self.sessions.pop(oldest, None)
         self.sessions[key] = {
             "feature": mode,
@@ -508,7 +543,7 @@ class PlusWorkflow:
                     f"Candidates: {json.dumps(_public_options(options))}",
                     AgentChoice,
                 )
-                options = _rank_options(options, ranked.variant_ids)
+                options = _rank_options(options, ranked.variant_ids, fallback=False)
             state["status"] = "completed"
             products = []
             for option in options:
@@ -522,8 +557,15 @@ class PlusWorkflow:
                         for v in product.get("variants", [])
                         if str(v.get("variant_id")) in valid_ids
                     ]
+                    verified_options = ", ".join(
+                        f"{k}: {v}" for k, v in option["selected_options"].items()
+                    )
                     product["match_reason"] = (
-                        "Approximate catalogue alternative; check product details before buying."
+                        f"Available catalogue alternative at {option['price']['amount']} "
+                        f"{spec['currency']}. "
+                        + (f"Verified options: {verified_options}. " if verified_options else "")
+                        + "Visual resemblance is approximate; "
+                        "brand, material and compatibility are unverified."
                     )
                     products.append(product)
             return self._result(

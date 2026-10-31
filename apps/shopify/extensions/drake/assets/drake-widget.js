@@ -679,6 +679,10 @@
         await this.submitPlusAction("reject");
         return;
       }
+      if (this.plusBusy && /^(?:stop|cancel)(?:\s+(?:this|request|search|mission))?[.!]?$/i.test(text.trim())) {
+        await this.sendPlusPayload({ feature: "cancel", text });
+        return;
+      }
       if (this.plusBusy) {
         this.addMessage("assistant", "Please let this request finish before starting another. Cart approval is a separate step.");
         return;

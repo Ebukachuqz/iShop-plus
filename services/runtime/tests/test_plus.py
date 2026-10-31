@@ -532,3 +532,96 @@ def test_catalog_failure_is_not_empty_search():
             )
 
     asyncio.run(run())
+
+
+def test_cancellation_releases_locks_and_discards_research_state():
+    async def run():
+        workflow = PlusWorkflow(Model(), lambda: NOW)
+        await workflow.handle(request("mission"), grant(), emit)
+        result = await workflow.handle(request("cancel", request_id="cancel_1"), grant(), emit)
+        assert result["status"] == "cancelled"
+        assert not workflow.sessions and not workflow.locks and not workflow.lock_users
+
+    asyncio.run(run())
+
+
+def test_websocket_cancels_slow_model_without_waiting_for_model_completion():
+    from fastapi.testclient import TestClient
+    from ishop.domain.models import SessionGrant
+    from ishop.transport.websocket import create_voice_app
+
+    cancelled = []
+
+    async def slow(payload, grant, emit):
+        if payload.get("feature") == "cancel":
+            return {
+                "type": "plus_result",
+                "request_id": payload["request_id"],
+                "status": "cancelled",
+            }
+        await emit("mission.planning", "Planning")
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+
+    secret = "transport_cancellation_test_secret_at_least_32_chars"
+    origin = "https://" + SHOP
+    signed = SessionGrant.create_signed(
+        grant_id="cancel_grant",
+        shop_id=SHOP,
+        permitted_origin=origin,
+        anonymous_session_id="cancel_session",
+        config_revision="cfg1",
+        asr_profile_id="elevenlabs-scribe-v2-realtime",
+        llm_profile_id="gemini-flash",
+        tts_profile_id="elevenlabs-tts-female-stream",
+        issued_at_ms=NOW - 100,
+        ttl_ms=60000,
+        signing_secret=secret,
+    )
+    app = create_voice_app(
+        signing_secret=secret,
+        allowed_origins={origin},
+        clock_ms=lambda: NOW,
+        session_factories={"elevenlabs-scribe-v2-realtime": lambda **kw: None},
+        allowed_llm_profiles={"gemini-flash"},
+        allowed_tts_profiles={"elevenlabs-tts-female-stream"},
+        plus_handler=slow,
+    )
+    with TestClient(app).websocket_connect("/ws/voice/" + SHOP, headers={"origin": origin}) as ws:
+        ws.send_json({"type": "authenticate", "grant": signed.__dict__})
+        assert ws.receive_json()["type"] == "authenticated"
+        ws.send_json(request("mission", request_revision=1, page_epoch=1))
+        assert ws.receive_json()["type"] == "plus_activity"
+        ws.send_json(request("cancel", request_id="cancel_now", request_revision=2, page_epoch=1))
+        assert ws.receive_json()["status"] == "cancelled"
+    assert cancelled == [True]
+
+
+def test_mission_clarification_retains_prior_constraints():
+    class Draft(Model):
+        async def generate(self, prompt, schema, image=None):
+            if schema is MissionSpec:
+                self.calls.append((schema.__name__, prompt, bool(image)))
+                return MissionSpec(
+                    goal="Office",
+                    budget="50",
+                    currency="USD",
+                    tasks=[{"category": "keyboard", "query": "keyboard"}],
+                    open_questions=["What other category should I include?"],
+                )
+            return await super().generate(prompt, schema, image)
+
+    async def run():
+        model = Draft()
+        workflow = PlusWorkflow(model, lambda: NOW)
+        assert (await workflow.handle(request("mission"), grant(), emit))[
+            "status"
+        ] == "needs_clarification"
+        await workflow.handle(request("refine", text="Include a mouse"), grant(), emit)
+        assert '"budget": "50"' in model.calls[-1][1]
+        assert not workflow.locks
+
+    asyncio.run(run())
