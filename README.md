@@ -16,7 +16,7 @@ The existing Shopify app, signed sessions, FastAPI WebSocket runtime, browser co
 
 ```text
 Drake photo/text/voice -> signed WebSocket -> selected multimodal Plus workflow
-  -> current-store browser catalogue -> verified alternatives / basket proposal
+  -> contextual goal routing -> current-store browser catalogue -> verified alternatives / basket proposal
   -> explicit approval -> serial Shopify cart tools -> fresh cart read-back
 ```
 
@@ -29,7 +29,7 @@ Drake photo/text/voice -> signed WebSocket -> selected multimodal Plus workflow
 - Add products, change quantities, remove lines, and show the cart.
 - Open supported cart drawers, navigate home or back, and scroll incrementally.
 - Hand the shopper over to Shopify checkout without entering payment details or placing the order.
-- Support manual recording and continuous voice conversations using ElevenLabs, with independently selected ordinary-chat reasoning.
+- Support manual recording and continuous voice conversations using ElevenLabs, with one selected model for conversation, images, and shopping goals.
 
 Product, price, availability, variant, and cart claims come from Shopify evidence. Cart mutations are checked against the current cart and verified after execution before Drake reports success.
 
@@ -101,20 +101,20 @@ At minimum, configure:
 - `DEV_ALLOWED_SHOP_DOMAINS`
 - `DEV_ALLOWED_ORIGINS`
 - `SESSION_SIGNING_SECRET` with at least 32 random characters
-- `GROQ_API_KEY` and `ISHOP_PLUS_GEMMA_PROVIDER=groq` select `qwen/qwen3.8-27b` for Vision/Missions. In Shopify admin, open iShop-plus → Drake provider settings → **Vision and Missions model** to switch independently of ordinary chat. Save, then open a new shopper session. Keys must be available to both the app server (choice eligibility) and runtime (inference).
+- `GROQ_API_KEY` and `ISHOP_PLUS_GEMMA_PROVIDER=groq` select `qwen/qwen3.8-27b` for all Drake reasoning. In Shopify admin, open iShop-plus → Drake provider settings → **Drake model** to switch the model used for conversation, images, and shopping goals. Save, then open a new shopper session. Keys must be available to both the app server (choice eligibility) and runtime (inference).
 - `NVIDIA_API_KEY` and `ISHOP_PLUS_GEMMA_PROVIDER=nvidia` for hosted `google/gemma-4-31b-it`
 - Optional `OPENROUTER_API_KEY` and `ISHOP_PLUS_GEMMA_PROVIDER=openrouter` select `google/gemma-4-31b-it:free` exclusively. Free availability is rate-limited; authenticated image tests currently fail with an upstream HTTP 429; successful image processing remains unverified.
 - Alternatively `ISHOP_PLUS_GEMMA_PROVIDER=google`, `GEMINI_API_KEY`, and `ISHOP_PLUS_GEMMA_MODEL` select the original Google route; its image requests failed in the tested account
 - `ISHOP_PLUS_VISION_ENABLED=true` and `ISHOP_PLUS_MISSIONS_ENABLED=true`
 - `ELEVENLABS_API_KEY`, `ISHOP_ENABLE_ELEVENLABS_REALTIME_STT=true`, and `ISHOP_ENABLE_ELEVENLABS_HTTP_TTS=true` for voice
 - Optionally `ELEVENLABS_VOICE_ID` for an account-accessible voice (Sarah is the verified default) and `ELEVENLABS_TTS_MODEL` (defaults to `eleven_flash_v2_5`)
-- Existing `GEMINI_MODEL` or `GROQ_API_KEY` configuration for the ordinary shopping-chat reasoning profile
+- No second reasoning-provider credential is required. The selected Drake model handles both text and image reasoning.
 
 Keep `.env` private. Provider credentials are server-side and must never be added to the theme extension or committed to Git.
 
 The runtime loads the repository-root `.env`; make the same relevant values available to the Shopify app process, using its own `.env` if your CLI configuration requires it. Use the exact current store origin. The supported interface is a Shopify Online Store theme with the Drake embed and browser commerce bridge; there is no cross-store search or WooCommerce adapter.
 
-Vision/Missions use the selected Gemma provider. NVIDIA calls `https://integrate.api.nvidia.com/v1/chat/completions` with server-side bearer authentication, compact JPEG image parts and SSE output. Typed validation allows one bounded schema correction; no automatic model/provider fallback occurs. The NVIDIA adapter limits output to 768 tokens and each attempt to approximately three minutes, since cold/queued requests were slow. Its image input is downscaled to at most 512 pixels per side: fine print and small visual details may be lost. Google remains an explicit alternative. See [NVIDIA's image API](https://docs.api.nvidia.com/nim/reference/google-gemma-4-31b-it-infer). ElevenLabs remains the exclusive live speech provider.
+All reasoning uses the selected Drake model. A contextual agent routes normal messages into conversation/commerce, photo refinement, or a coordinated basket workflow; there is no separate Missions mode button. NVIDIA calls `https://integrate.api.nvidia.com/v1/chat/completions` with server-side bearer authentication, compact JPEG image parts and SSE output. Typed validation allows one bounded schema correction; no automatic model/provider fallback occurs. The NVIDIA adapter limits output to 768 tokens and each attempt to approximately three minutes, since cold/queued requests were slow. Its image input is downscaled to at most 512 pixels per side: fine print and small visual details may be lost. Google remains an explicit alternative. See [NVIDIA's image API](https://docs.api.nvidia.com/nim/reference/google-gemma-4-31b-it-infer). ElevenLabs remains the exclusive live speech provider.
 
 ## Link and run the Shopify app
 
@@ -234,7 +234,7 @@ Verify the ElevenLabs key has transcription and synthesis permissions, the capab
 
 ### Ordinary chat reports that reasoning is unavailable
 
-The ordinary-chat Gemini 3.8 probe returned HTTP 503 during verification. Groq GPT OSS 120B handled the corresponding greeting successfully. For the current demonstration, select **Groq GPT OSS 120B** for ordinary shopping chat with a configured `GROQ_API_KEY`. Vision and Missions continue to use **Gemma 4** independently; the source ordinary-chat default has not been changed.
+Historical Gemini/GPT-OSS split-provider observations are superseded by the [unified model and follow-up verification](evals/reports/unified-followup-verification.md). One selected Drake model now handles all reasoning.
 
 ### Product or cart data appears stale
 

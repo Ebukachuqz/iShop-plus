@@ -1,5 +1,7 @@
 # Multimodal provider switching and Groq verification
 
+This report records an earlier implementation. Its separate reasoning selectors are superseded by [unified Drake reasoning](unified-followup-verification.md).
+
 ## Implementation
 
 Vision and Missions now accept a common typed `MultimodalClient` interface. Groq uses `qwen/qwen3.8-27b` through its documented HTTPS chat-completions endpoint, base64 image messages, JSON mode, disabled reasoning, and a bounded 768-token output. Existing Gemma providers remain available: Google, NVIDIA, and OpenRouter. There is no automatic provider/model fallback.
