@@ -651,3 +651,35 @@ def test_image_http_400_is_actionable_and_does_not_expose_provider_body(monkeypa
     assert len(calls) == 1
     assert "private provider details" not in str(error.value)
     assert calls[0].get_header("X-goog-api-key") == "offline-test-key"
+
+
+def test_vision_searches_secondary_queries_without_inventing_candidates():
+    class MultiQuery(Model):
+        async def generate(self, prompt, schema, image=None):
+            result = await super().generate(prompt, schema, image)
+            if schema is VisionSpec:
+                result.search_terms = ["black shirt", "shirt", "black shirt"]
+            return result
+
+    async def run():
+        workflow = PlusWorkflow(MultiQuery(), lambda: NOW)
+        response = await workflow.handle(request("vision", image=image_payload()), grant(), emit)
+        assert [q["query"] for q in response["queries"]] == ["shirt", "black shirt"]
+        result = await workflow.handle(
+            {
+                "type": "plus_catalog_result",
+                "request_id": "r1",
+                "shop_id": SHOP,
+                "observed_at_ms": NOW,
+                "results": [
+                    {"agent_id": "vision", "products": []},
+                    {"agent_id": "vision_2", "products": [product()]},
+                ],
+            },
+            grant(),
+            emit,
+        )
+        assert [p["product_id"] for p in result["products"]] == ["p1"]
+        assert "authorized_command" not in result
+
+    asyncio.run(run())

@@ -16,6 +16,7 @@ from ishop.domain.journal import CommandJournal
 from ishop.domain.models import CartSnapshot, SessionGrant
 from ishop.domain.session_store import SessionStore
 from ishop.llm.fake import FakeLlmProvider
+from ishop.plus import PlusWorkflow, VisionSpec, MissionSpec, AgentChoice
 from ishop.orchestration.controller import ShoppingController
 from ishop.transport.websocket import create_voice_app
 
@@ -88,8 +89,37 @@ async def shopping_turn(payload: dict[str, Any], grant: SessionGrant) -> dict[st
     return response
 
 
-app = create_voice_app(signing_secret=SECRET, allowed_origins={ORIGIN}, session_factory=lambda **_: None,
-                       shopping_turn_handler=shopping_turn, command_journal=command_journal)
+class FixturePlusModel:
+    """Deliberately synthetic model; production Plus workflow/transport/bridge remain real."""
+    async def generate(self, prompt, schema, image=None):
+        if schema is VisionSpec:
+            return VisionSpec(query="snowboard", currency="USD", required_options={"Color": "Ice"})
+        if schema is MissionSpec:
+            return MissionSpec(goal="Three board test basket", budget="2500", currency="USD", tasks=[
+                {"category": "Complete", "query": "complete snowboard", "required_options": {"Color": "Ice"}},
+                {"category": "Multi-location", "query": "multi-location snowboard"},
+                {"category": "Multi-managed", "query": "multi-managed snowboard"}])
+        if schema is AgentChoice:
+            variant = "201" if "research_2" in prompt else "301" if "research_3" in prompt else "101"
+            return AgentChoice(variant_ids=[variant])
+        raise AssertionError("Unexpected fixture schema")
+
+
+plus_workflow = PlusWorkflow(FixturePlusModel())
+
+
+async def command_result(command, result, verified, grant):
+    plus_workflow.command_finished(command, result, verified, grant)
+    return {"status": "completed" if verified else "error",
+            "spoken_response": "Verified test cart update." if verified else "Test cart update was not verified."}
+
+
+app = create_voice_app(signing_secret=SECRET, allowed_origins={ORIGIN},
+    session_factories={"elevenlabs-scribe-v2-realtime": lambda **_: None},
+    allowed_tts_profiles={"elevenlabs-tts-female-stream"},
+    shopping_turn_handler=shopping_turn, command_journal=command_journal,
+    plus_handler=plus_workflow.handle, shopping_command_result_handler=command_result)
+
 
 
 def storefront_page(*, product: bool = False, search_products: list[tuple[str, str]] | None = None) -> HTMLResponse:
@@ -183,7 +213,7 @@ async def asset(name: str):
 async def bootstrap() -> dict[str, Any]:
     now = int(time.time() * 1000)
     grant = SessionGrant.create_signed("grant_connected_e2e", SHOP, ORIGIN, "sess_connected_e2e_0001", "e2e-v1",
-        "sahara-stream-pcm", "groq-gpt-oss-120b", "sahara-tts-female-pcm", now, 300_000, SECRET)
+        "elevenlabs-scribe-v2-realtime", "groq-gpt-oss-120b", "elevenlabs-tts-female-stream", now, 300_000, SECRET)
     return {"grant": grant.__dict__}
 
 

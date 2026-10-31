@@ -41,7 +41,7 @@ async function evaluate(expression) {
 }
 
 async function submit(text, expectedState = 'ready') {
-  await evaluate(`document.querySelector('.drake-text-input').value=${JSON.stringify(text)}; document.querySelector('.drake-send').click(); true`);
+  await evaluate(`document.querySelector('.drake-text-input').value=${JSON.stringify(text)}; document.querySelector('.drake-text-input').closest('form').querySelector('.drake-send').click(); true`);
   if (expectedState) {
     try {
       await waitFor(() => evaluate(`document.querySelector('#ishop-drake-root')?.dataset.state === ${JSON.stringify(expectedState)}`));
@@ -219,6 +219,39 @@ try {
   await submit('Ice', 'completed');
   cart = await evaluate("fetch('/cart.js').then(r=>r.json())");
   check(String(cart.items[0].variant_id), '101', 'current-page reference add');
+
+  // Plus integration: model/catalogue boundary is synthetic, all widget, transport,
+  // orchestration, approval and verified Ajax cart execution are production code.
+  await evaluate(`(async () => {
+    const canvas = document.createElement('canvas'); canvas.width = 32; canvas.height = 32;
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+    await window.IShopDrake.selectImage(new File([blob], 'reference.png', {type: 'image/png'}));
+    return true;
+  })()`);
+  await submit('Find this in Ice');
+  await waitFor(() => evaluate("window.IShopDrake.visionReady && document.querySelectorAll('.drake-card').length === 1"));
+  check(await evaluate("window.IShopDrake.candidates.products[0].variants.length"), 1, 'Vision exposes only matching variants');
+  check(await evaluate("window.IShopDrake.candidates.products[0].variants[0].variant_id"), '101', 'Vision option grounded to actual fixture variant');
+  check((await evaluate("fetch('/cart.js').then(r=>r.json())")).items[0].quantity, 1, 'Vision discovery does not add items');
+
+  await evaluate("window.IShopDrake.setPlusMode('mission'); true");
+  await submit('Build a three-board basket under 2500 USD');
+  await waitFor(() => evaluate("Boolean(window.IShopDrake.missionProposal)"));
+  check(await evaluate("window.IShopDrake.missionProposal.agents.length"), 3, 'three separately scoped research calls reach proposal');
+  await evaluate("window.IShopDrake.rejectMissionButton.click(); true");
+  await waitFor(() => evaluate("!window.IShopDrake.plusBusy && !window.IShopDrake.missionProposal"));
+  check((await evaluate("fetch('/cart.js').then(r=>r.json())")).items[0].quantity, 1, 'rejected mission performs zero writes');
+
+  // A committed transcript uses exactly the same mission route as typed input.
+  await evaluate("window.IShopDrake.handleVoiceEvent({type:'final_transcript', text:'New mission: three boards under 2500 USD'}); true");
+  await waitFor(() => evaluate("Boolean(window.IShopDrake.missionProposal) && !window.IShopDrake.plusBusy"));
+  await evaluate("window.IShopDrake.approveMissionButton.click(); true");
+  await waitFor(() => evaluate("!window.IShopDrake.plusBusy && !window.IShopDrake.plusMissionExecuting && !window.IShopDrake.missionProposal"));
+  cart = await evaluate("fetch('/cart.js').then(r=>r.json())");
+  check(cart.items.length, 3, 'approved mission adds all three verified lines');
+  check(cart.items.find(item => String(item.variant_id) === '101').quantity, 2, 'mission preserves preexisting quantity and adds approved delta');
+  check(cart.items.find(item => String(item.variant_id) === '201').quantity, 1, 'mission second serial update verified');
+  check(cart.items.find(item => String(item.variant_id) === '301').quantity, 1, 'mission third serial update verified');
 
   await submit('What is your return policy?', 'failed');
   check(await evaluate("document.querySelector('.drake-conversation').innerText.includes('safely choose') || document.querySelector('.drake-conversation').innerText.includes('unavailable')"), true, 'policy capability unavailable is honest');
