@@ -283,6 +283,7 @@ class NvidiaGemmaClient(GemmaClient):
             headers={
                 "Content-Type": "application/json",
                 "Accept": "text/event-stream",
+                "NVCF-POLL-SECONDS": "120",
                 "Authorization": f"Bearer {self.api_key}",
             },
             method="POST",
@@ -290,10 +291,10 @@ class NvidiaGemmaClient(GemmaClient):
         try:
             with urllib.request.urlopen(request, timeout=self.request_timeout) as response:
                 if response.status == 202:
-                    raise PlusError(
-                        "NVIDIA is still processing that request. Please try again shortly."
-                    )
-                if "text/event-stream" in getattr(response, "headers", {}).get("Content-Type", ""):
+                    data = self._poll_result(response.headers.get("NVCF-REQID", ""))
+                elif "text/event-stream" in getattr(response, "headers", {}).get(
+                    "Content-Type", ""
+                ):
                     data = self._read_stream(response)
                 else:
                     data = json.loads(response.read(1024 * 1024))
@@ -332,6 +333,32 @@ class NvidiaGemmaClient(GemmaClient):
                 }
             ]
         }
+
+    def _poll_result(self, request_id):
+        try:
+            request_id = str(uuid.UUID(request_id))
+        except (ValueError, TypeError, AttributeError):
+            raise PlusError("NVIDIA returned an invalid pending request. Please retry.") from None
+        deadline = time.monotonic() + 120
+        for _ in range(24):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            request = urllib.request.Request(
+                f"https://integrate.api.nvidia.com/v1/status/{request_id}",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Accept": "application/json",
+                    "NVCF-POLL-SECONDS": "5",
+                },
+            )
+            with urllib.request.urlopen(request, timeout=min(10, remaining)) as response:
+                if response.status == 200:
+                    return json.loads(response.read(1024 * 1024))
+                if response.status != 202:
+                    raise PlusError("NVIDIA returned an unexpected pending-request status.")
+            time.sleep(0.5)
+        raise PlusError("NVIDIA's queued request did not finish in time. Please retry later.")
 
     def _read_stream(self, response):
         deadline = time.monotonic() + self.request_timeout

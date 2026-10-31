@@ -76,3 +76,22 @@ Official references:
 - [Hosted Gemma 4 model](https://build.nvidia.com/google/gemma-4-31b-it)
 - [Image request and streaming parameters](https://docs.api.nvidia.com/nim/reference/google-gemma-4-31b-it-infer)
 - [Pending invocation status](https://docs.api.nvidia.com/nim/reference/google-gemma-4-31b-it-statuspolling)
+
+
+## Queue investigation follow-up
+NVIDIA documents queue/gateway hold-open limits and polling pending jobs:
+https://docs.nvidia.com/nvcf/dev/overview/generic-http-function-invocation .
+A live short-window probe returned HTTP 504, consistent with unavailable workers during
+that window. This is evidence of queue/service pressure, not proof of every timeout's cause.
+The adapter now allows a bounded hold-open window and polls HTTP 202 request IDs via
+GET /v1/status/UUID without submitting another generation. Invalid IDs fail closed.
+334 Python tests passed, including the no-duplicate-generation polling regression.
+Complete live Vision remains unverified; the new polling path has fixture coverage only.
+
+Google forum investigation found a historical Gemma 3 hosted modality restriction:
+https://discuss.ai.google.dev/t/gemma-3-missing-features-despite-announcement/71692 .
+This concerns Gemma 3 and is not confirmation of a Gemma 4 outage.
+Gemma 4 tool-set validation reports exist at
+https://github.com/googleapis/python-genai/issues/2291 and thinking-field errors at
+https://discuss.ai.google.dev/t/disable-thinking-for-gemma-4/138885/5 . Neither matches our
+tool-free JPEG reproduction. No confirmed Google-side cause or documented fix was found.

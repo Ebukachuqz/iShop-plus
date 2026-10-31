@@ -160,3 +160,38 @@ def test_nvidia_timeout_is_reported_as_latency_not_invalid_key(monkeypatch):
     monkeypatch.setattr("ishop.plus.urllib.request.urlopen", timeout)
     with pytest.raises(PlusError, match="took too long"):
         asyncio.run(NvidiaGemmaClient(api_key="test-key").generate("photo", VisionSpec))
+
+
+def test_nvidia_pending_result_polls_same_request_without_regeneration(monkeypatch):
+    pending_id = "00000000-0000-0000-0000-000000000001"
+
+    class Pending(Response):
+        status = 202
+        headers = {"NVCF-REQID": pending_id}
+
+    calls = []
+
+    def respond(request, **kwargs):
+        calls.append(request)
+        if len(calls) == 1:
+            return Pending(b"")
+        return Response(
+            json.dumps(
+                {
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {
+                                "content": json.dumps({"query": "croissant", "currency": "USD"})
+                            },
+                        }
+                    ]
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr("ishop.plus.urllib.request.urlopen", respond)
+    result = asyncio.run(NvidiaGemmaClient(api_key="test-key").generate("photo", VisionSpec))
+    assert result.query == "croissant"
+    assert [r.get_method() for r in calls] == ["POST", "GET"]
+    assert calls[1].full_url.endswith("/status/" + pending_id)
