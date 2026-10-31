@@ -109,6 +109,7 @@ def create_voice_app(
     command_journal: CommandJournal | None = None,
     shopping_tts_handler: ShoppingTtsHandler | None = None,
     shopping_command_result_handler: ShoppingCommandResultHandler | None = None,
+    plus_handler: Callable[..., Any] | None = None,
 ) -> FastAPI:
     """Create the minimal authenticated voice transport used by WP-02."""
     if len(signing_secret) < 32:
@@ -171,6 +172,7 @@ def create_voice_app(
         tts_tasks: set[asyncio.Task[None]] = set()
         finish_tasks: set[asyncio.Task[None]] = set()
         latest_shopping_revision = 0
+        plus_turns: dict[str, dict[str, Any]] = {}
         payload: dict[str, Any] = {}
 
         async def _send_error(socket: WebSocket, code: str) -> None:
@@ -315,6 +317,9 @@ def create_voice_app(
                 except json.JSONDecodeError:
                     await _send_error(websocket, "invalid_json")
                     continue
+                if not isinstance(payload, dict):
+                    await _send_error(websocket, "invalid_message")
+                    continue
                 action = payload.get("type")
                 if action == "start_turn":
                     cancel_pending_tts()
@@ -394,6 +399,67 @@ def create_voice_app(
                         await session.cancel()
                         session = None
                     await websocket.send_json({"type": "turn_canceled", "revision": revision})
+                elif action in {"plus_request", "plus_catalog_result"}:
+                    from ishop.plus import PlusError
+                    request_id = str(payload.get("request_id", ""))
+                    async def emit_plus(stage: str, label: str) -> None:
+                        await websocket.send_json({"type": "plus_activity", "request_id": request_id,
+                                                   "stage": stage, "label": label[:200]})
+                    try:
+                        if plus_handler is None:
+                            raise PlusError("Vision and Missions are unavailable on this runtime.")
+                        if len(text) > 6_000_000:
+                            raise PlusError("Please choose an image smaller than 4 MB.")
+                        if not grant.is_valid_at(now_ms()) or revocation_registry.is_revoked(grant):
+                            raise PlusError("Your session expired. Refresh the storefront to reconnect.")
+                        if action == "plus_request":
+                            plus_revision = payload.get("request_revision")
+                            epoch = payload.get("page_epoch")
+                            if (type(plus_revision) is not int or plus_revision < 1
+                                    or type(epoch) is not int or epoch < 1):
+                                raise PlusError("The page context is unavailable. Refresh and try again.")
+                            cancel_pending_tts()
+                            plus_turns[request_id] = {"turn_id": "turn_plus_" + request_id,
+                                                      "request_revision": plus_revision, "page_epoch": epoch}
+                            if len(plus_turns) > 20:
+                                plus_turns.pop(next(iter(plus_turns)))
+                        result = await plus_handler(payload, grant, emit_plus)
+                        if not isinstance(result, dict):
+                            raise PlusError("I couldn't finish that request. Please try again.")
+                        command = result.get("authorized_command")
+                        if command:
+                            pending_commands[command["command_id"]] = {
+                                "turn_id": command["turn_id"], "request_revision": command["request_revision"],
+                                "command": command,
+                            }
+                            if journal is not None:
+                                try:
+                                    journal.prepare_command(_authorized_command_from_dict(command))
+                                    journal.mark_dispatched(command["command_id"])
+                                except Exception:
+                                    pending_commands.pop(command["command_id"], None)
+                                    if shopping_command_result_handler is not None:
+                                        await shopping_command_result_handler(command, {}, False, grant)
+                                    raise PlusError("I couldn't safely record that cart action. "
+                                                    "No new command was sent; please review your cart.") from None
+                        context = plus_turns.get(request_id)
+                        if context:
+                            result.update(context)
+                        await websocket.send_json(result)
+                        if (shopping_tts_handler is not None and context
+                                and result.get("type") == "plus_result"
+                                and result.get("status") not in {"executing", "error"} and result.get("message")):
+                            task = asyncio.create_task(deliver_tts({"spoken_response": result["message"]}, context))
+                            tts_tasks.add(task)
+                            task.add_done_callback(tts_tasks.discard)
+                    except (PlusError, KeyError, TypeError, ValueError) as exc:
+                        public_message = str(exc) if isinstance(exc, PlusError) else "I couldn't verify that request. Please try again."
+                        await websocket.send_json({"type": "plus_result", "request_id": request_id,
+                                                   "status": "error", "message": public_message})
+                    except Exception:
+                        logger.exception("Plus workflow failed")
+                        await websocket.send_json({"type": "plus_result", "request_id": request_id,
+                                                   "status": "error", "message": "This request couldn't finish. Please try again."})
                 elif action == "shopping_turn":
                     if isinstance(payload.get("request_revision"), int) and payload["request_revision"] > latest_shopping_revision:
                         cancel_pending_tts()

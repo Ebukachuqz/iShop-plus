@@ -716,3 +716,220 @@ test('text delivery and card presentation succeed independent of delayed or fail
   // Assert state is ready even without TTS
   assert.equal(widget.state.name, 'ready');
 });
+
+function makePlusWidget() {
+  function makeNode(tag) {
+    const node = {
+      tagName: tag.toUpperCase(), children: [], attributes: {}, dataset: { shopDomain: 'shop.myshopify.com' },
+      value: '', textContent: '', hidden: false, disabled: false,
+      classList: { add() {} },
+      setAttribute(key, value) { this.attributes[key] = String(value); },
+      append(...children) { this.children.push(...children); },
+      replaceChildren(...children) { this.children = children; },
+      insertBefore(child, ref) { const at = this.children.indexOf(ref); this.children.splice(at < 0 ? this.children.length : at, 0, child); },
+      addEventListener() {}, querySelector() { return makeNode('form'); }, focus() {},
+    };
+    return node;
+  }
+  const { DrakeWidget } = loadWidgetState({ createElement: makeNode, getElementById: () => null },
+    { Shopify: { currency: { active: 'USD' } } },
+    { host: 'shop.myshopify.com', origin: 'https://shop.myshopify.com', pathname: '/', search: '' });
+  const widget = new DrakeWidget(makeNode('div'), null);
+  const requests = [];
+  const catalogResults = [];
+  const commandResults = [];
+  widget.client = {
+    revision: 0, connect: async () => {},
+    sendPlusRequest: (payload) => requests.push(payload),
+    sendPlusCatalogResult: (payload) => catalogResults.push(payload),
+    sendCommandResult: (id, result) => commandResults.push({ id, result }),
+  };
+  return { widget, requests, catalogResults, commandResults };
+}
+
+test('plus voice protocol preserves independent proposal revisions and uses authenticated socket', async () => {
+  const voice = loadVoice();
+  const sent = [];
+  const client = new voice.VoiceSessionClient({ url: 'wss://runtime.example/ws', grant: { grant_id: 'grant_1' } });
+  client.socket = { readyState: 1, send: (raw) => sent.push(JSON.parse(raw)) };
+  client.revision = 30;
+  const events = [];
+  client.onEvent = (event) => events.push(event);
+  client.sendPlusRequest({ feature: 'mission', request_id: 'plus_1' });
+  client.sendPlusCatalogResult({ request_id: 'plus_1', results: [] });
+  client._receive(JSON.stringify({ type: 'plus_result', request_id: 'plus_1', revision: 1, status: 'approval' }));
+  assert.equal(sent[0].type, 'plus_request');
+  assert.equal(sent[1].type, 'plus_catalog_result');
+  assert.equal(events[0].revision, 1);
+});
+
+test('Vision and Missions browser catalog handoffs perform only bounded read searches', async () => {
+  const { widget, catalogResults } = makePlusWidget();
+  const calls = [];
+  const product = { product_id: 'p1', title: 'Keyboard', variants: [] };
+  widget.catalog = { search: async (query, limit) => { calls.push({ query, limit }); return { source: 'ajax_product_json', products: [product] }; } };
+  widget.plusRequestId = 'plus_active';
+  widget.plusMode = 'mission';
+  await widget.retrievePlusCatalog({ request_id: 'plus_active', feature: 'mission', queries: [
+    { agent_id: 'research_keyboard', query: 'keyboard' }, { agent_id: 'research_mouse', query: 'mouse' },
+  ] });
+  assert.deepEqual(calls.map((call) => call.query), ['keyboard', 'mouse']);
+  assert.ok(calls.every((call) => call.limit === 8));
+  assert.equal(catalogResults.length, 1);
+  assert.equal(catalogResults[0].results.length, 2);
+  assert.equal(catalogResults[0].shop_id, 'shop.myshopify.com');
+  assert.equal(catalogResults[0].results[0].products[0].product_id, 'p1');
+  assert.equal(widget.pendingReceipts.size, 0);
+});
+
+test('mission approval rechecks every product and cart but cannot execute without runtime command', async () => {
+  const { widget, requests } = makePlusWidget();
+  let reads = 0;
+  let writes = 0;
+  const handles = [];
+  widget.bridge = { readAuthoritativeCart: async () => { reads += 1; return { shop_id: 'shop.myshopify.com', currency: 'USD', lines: [] }; },
+    executeCommand: async () => { writes += 1; }, getAvailableTools: async () => ['add_variant'] };
+  widget.catalog = { getByHandle: async (handle) => { handles.push(handle); return { product_id: handle, handle, variants: [] }; } };
+  widget.missionProposal = { proposal_id: 'proposal_1', revision: 3, items: [{ handle: 'keyboard' }, { handle: 'mouse' }] };
+  await widget.submitPlusAction('approve');
+  assert.equal(reads, 1);
+  assert.equal(writes, 0);
+  assert.deepEqual(handles, ['keyboard', 'mouse']);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].proposal_id, 'proposal_1');
+  assert.equal(requests[0].revision, 3);
+  assert.equal(requests[0].products.length, 2);
+  assert.equal(requests[0].shop_id, 'shop.myshopify.com');
+  assert.ok(requests[0].observed_at_ms > Date.now() - 5000);
+  assert.equal(requests[0].request_revision, 1);
+  assert.equal(widget.plusBusy, true);
+});
+
+test('rejected mission requires no catalog or cart access and cannot mutate cart', async () => {
+  const { widget, requests } = makePlusWidget();
+  widget.bridge = { readAuthoritativeCart: () => { throw new Error('must_not_read'); }, executeCommand: () => { throw new Error('must_not_write'); } };
+  widget.missionProposal = { proposal_id: 'proposal_reject', revision: 1, items: [] };
+  await widget.submitPlusAction('reject');
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].feature, 'reject');
+  assert.equal(requests[0].current_cart, undefined);
+});
+
+test('duplicate approval is blocked while fresh evidence is being collected', async () => {
+  const { widget, requests } = makePlusWidget();
+  let unblock;
+  const waiting = new Promise((resolve) => { unblock = resolve; });
+  widget.bridge = { readAuthoritativeCart: async () => { await waiting; return { shop_id: 'shop.myshopify.com', currency: 'USD', lines: [] }; } };
+  widget.catalog = { getByHandle: async () => ({ product_id: 'p1', variants: [] }) };
+  widget.missionProposal = { proposal_id: 'proposal_once', revision: 1, items: [{ handle: 'keyboard' }] };
+  const first = widget.submitPlusAction('approve');
+  await widget.submitPlusAction('approve');
+  unblock();
+  await first;
+  assert.equal(requests.length, 1);
+});
+
+test('plus events from obsolete requests cannot replace current products or progress', () => {
+  const { widget } = makePlusWidget();
+  widget.plusRequestId = 'plus_current';
+  const before = widget.statusText.textContent;
+  widget.handlePlusEvent({ type: 'plus_result', request_id: 'plus_old', status: 'completed', message: 'Obsolete', products: [] });
+  widget.handlePlusEvent({ type: 'plus_activity', request_id: 'plus_old', stage: 'cart.updating' });
+  assert.equal(widget.messageHistory.length, 0);
+  assert.equal(widget.statusText.textContent, before);
+});
+
+test('invalid Vision uploads are rejected before reading image bytes', async () => {
+  const { widget } = makePlusWidget();
+  await widget.selectImage({ type: 'text/html', size: 100, name: 'unsafe.html' });
+  assert.equal(widget.selectedImage, null);
+  assert.equal(widget.state.name, 'failed');
+  await widget.selectImage({ type: 'image/png', size: 5 * 1024 * 1024 });
+  assert.equal(widget.selectedImage, null);
+});
+
+test('activity and speaking orb states come from workflow and playback events with reduced-motion fallback', () => {
+  const { widget } = makePlusWidget();
+  widget.plusRequestId = 'plus_current';
+  widget.handlePlusEvent({ type: 'plus_activity', request_id: 'plus_current', stage: 'mission.agent.completed', label: 'Researched keyboards: 3 verified options' });
+  assert.equal(widget.statusText.textContent, 'Researched keyboards: 3 verified options');
+  assert.equal(widget.root.dataset.activity, 'working');
+  const css = readFileSync(join(here, '..', '..', '..', 'apps', 'shopify', 'extensions', 'drake', 'assets', 'drake-bootstrap.css'), 'utf8');
+  assert.match(css, /prefers-reduced-motion/);
+  assert.match(css, /data-audio-state='speaking'/);
+});
+
+test('verified mission acknowledgements alone advance serialized writes, and duplicates do not', () => {
+  const { widget } = makePlusWidget();
+  const actions = [];
+  widget.plusMissionExecuting = true;
+  widget.missionProposal = { proposal_id: 'proposal_1', revision: 1 };
+  widget.submitPlusAction = (action) => actions.push(action);
+  widget.pendingReceipts.set('cmd_1', { result: { outcome: 'verified_success' }, request_revision: 1 });
+  widget.handleVoiceEvent({ type: 'command_result_ack', command_id: 'cmd_1', verified: true, request_revision: 1 });
+  widget.handleVoiceEvent({ type: 'command_result_ack', command_id: 'cmd_1', verified: true, request_revision: 1 });
+  assert.deepEqual(actions, ['continue']);
+  widget.pendingReceipts.set('cmd_2', { result: { outcome: 'uncertain', errors: ['could not be verified'] }, request_revision: 2 });
+  widget.handleVoiceEvent({ type: 'command_result_ack', command_id: 'cmd_2', verified: false, request_revision: 2 });
+  assert.deepEqual(actions, ['continue']);
+  assert.equal(widget.plusMissionExecuting, false);
+});
+
+test('negative mission instruction stops future additions even during an active request', async () => {
+  const { widget } = makePlusWidget();
+  widget.plusBusy = true;
+  widget.plusMissionExecuting = true;
+  widget.missionProposal = { proposal_id: 'proposal_1', revision: 1 };
+  const actions = [];
+  widget.submitPlusAction = async (action) => actions.push(action);
+  await widget.submitPlusRequest("Don't add anything yet");
+  assert.deepEqual(actions, ['reject']);
+  assert.equal(widget.plusMissionExecuting, false);
+});
+
+test('mission budget follow-ups reuse the existing mission specification', async () => {
+  const { widget, requests } = makePlusWidget();
+  widget.plusMode = 'mission';
+  widget.missionReady = true;
+  widget.missionProposal = { proposal_id: 'proposal_existing', revision: 1 };
+  await widget.submitPlusRequest('Make the budget under 50 dollars');
+  assert.equal(requests[0].feature, 'refine');
+  assert.equal(widget.missionProposal, null);
+  widget.plusBusy = false;
+  await widget.submitPlusRequest('New mission: keyboard and mouse under 100 dollars');
+  assert.equal(requests[1].feature, 'mission');
+});
+
+test('explicit product and cart actions leave Vision refinement routing and keep visible identities', async () => {
+  const { widget } = makePlusWidget();
+  widget.plusMode = 'vision';
+  widget.visionReady = true;
+  widget.plusResultsVisible = true;
+  widget.candidates.products = [{ product_id: 'p1', title: 'Blue Keyboard' }, { product_id: 'p2', title: 'Black Keyboard' }];
+  assert.equal(widget.shouldUsePlus('Open the second one'), false);
+  assert.equal(widget.shouldUsePlus('Add this to my cart'), false);
+  assert.equal(widget.shouldUsePlus('Only black and under 50 dollars'), true);
+  const calls = [];
+  widget.submitShoppingRequest = async (...args) => calls.push(args);
+  await widget.submitLegacyShoppingRequest('Open the second one');
+  assert.match(calls[0][0], /Black Keyboard/);
+  assert.equal(calls[0][1].products[1].product_id, 'p2');
+  widget.plusMode = 'mission';
+  assert.equal(widget.shouldUsePlus('Show my cart'), false);
+  assert.equal(widget.plusMode, 'mission');
+});
+
+test('transport loss clears busy state and prevents an approved mission from resuming writes', () => {
+  const { widget } = makePlusWidget();
+  widget.plusBusy = true;
+  widget.plusMissionExecuting = true;
+  widget.plusRequestId = 'plus_lost';
+  widget.missionProposal = { proposal_id: 'proposal_lost', revision: 1 };
+  widget.handleVoiceEvent({ type: 'closed' });
+  assert.equal(widget.plusBusy, false);
+  assert.equal(widget.plusMissionExecuting, false);
+  assert.equal(widget.plusRequestId, null);
+  assert.equal(widget.missionProposal, null);
+  assert.equal(widget.proposalPanel.hidden, true);
+  assert.equal(widget.state.name, 'reconnecting');
+});

@@ -43,8 +43,8 @@ class RuntimeSettings:
             raise ValueError("DEV_ALLOWED_ORIGINS must list at least one storefront origin")
 
         sahara_api_key = os.getenv("SAHARA_API_KEY") or os.getenv("INTRON_API_KEY") or ""
-        if not sahara_api_key:
-            raise ValueError("SAHARA_API_KEY is required for the active realtime speech profile")
+        # Kept for archival evaluation configuration. iShop-plus uses ElevenLabs
+        # for live speech and remains usable through text if speech is unavailable.
 
         record_audio = os.getenv("RECORD_AUDIO_ENABLED", "false").strip().lower() == "true"
         control_secret = os.getenv("RUNTIME_CONTROL_SECRET", "").strip() or None

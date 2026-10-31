@@ -17,8 +17,8 @@ describe("merchant provider profiles", () => {
 
   test("requires explicit verification in addition to optional provider credentials", () => {
     const profiles = providerProfiles();
-    expect(profiles.find((profile) => profile.id === "sahara-stream-pcm")?.enabled).toBe(true);
-    expect(profiles.find((profile) => profile.id === "sahara-tts-female-pidgin")?.enabled).toBe(true);
+    expect(profiles.find((profile) => profile.id === "sahara-stream-pcm")?.enabled).toBe(false);
+    expect(profiles.find((profile) => profile.id === "sahara-tts-female-pidgin")?.enabled).toBe(false);
     expect(profiles.find((profile) => profile.id === "elevenlabs-scribe-v2-realtime")?.enabled).toBe(false);
     expect(profiles.find((profile) => profile.id === "groq-whisper-large-v3-batch")?.enabled).toBe(false);
     expect(profiles.find((profile) => profile.id === "gemini-flash")?.enabled).toBe(false);
@@ -47,7 +47,23 @@ describe("merchant provider profiles", () => {
     ).toEqual({
       asr: "Choose a recognized profile for this role",
       llm: "Gemini server credential is unavailable",
+      tts: "iShop-plus live voice uses ElevenLabs only; this profile is retained for archived evaluations",
     });
+  });
+
+  test("never enables retired live speech providers even when their credentials and gates exist", () => {
+    process.env.ELEVENLABS_API_KEY = "configured";
+    process.env.ISHOP_ENABLE_ELEVENLABS_REALTIME_STT = "true";
+    process.env.ISHOP_ENABLE_ELEVENLABS_HTTP_TTS = "true";
+    process.env.GEMINI_API_KEY = "configured";
+    process.env.ASSEMBLYAI_API_KEY = "configured";
+    process.env.ISHOP_ENABLE_ASSEMBLYAI_REALTIME_STT = "true";
+    process.env.ISHOP_ENABLE_GEMINI_LIVE_STT = "true";
+    process.env.ISHOP_ENABLE_GEMINI_TTS = "true";
+    process.env.ISHOP_ENABLE_GROQ_TTS = "true";
+    const liveSpeech = providerProfiles().filter((profile) => profile.enabled && profile.role !== "llm");
+    expect(liveSpeech.length).toBeGreaterThanOrEqual(2);
+    expect(liveSpeech.every((profile) => profile.id.startsWith("elevenlabs-"))).toBe(true);
   });
 
   test("browser profile data contains no credentials or endpoints", () => {

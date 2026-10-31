@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from ishop.app import create_runtime_app
 from ishop.config import RuntimeSettings
@@ -80,8 +81,8 @@ class FakeHttpStreamResponse:
 
 
 def make_grant(
-    asr_profile: str = "sahara-stream-pcm",
-    tts_profile: str = "sahara-tts-female-pidgin",
+    asr_profile: str = "elevenlabs-scribe-v2-realtime",
+    tts_profile: str = "elevenlabs-tts-female-stream",
     llm_profile: str = "groq-gpt-oss-120b",
 ) -> dict[str, Any]:
     now = int(time.time() * 1000)
@@ -176,7 +177,7 @@ def test_vp02_vp04_vp05_elevenlabs_http_tts_streaming_cancellation():
         )
 
         session = await provider.synthesize("Grounded response text", generation=3, reply_id="rep_1")
-        assert "21m00Tcm4TlvDq8ikWAM" in captured_request["url"]
+        assert "EXAVITQu4vr4xnSDxMaL" in captured_request["url"]
         assert captured_request["data"]["text"] == "Grounded response text"
         assert captured_request["data"]["model_id"] == "eleven_flash_v2_5"
         assert captured_request["headers"]["Xi-api-key"] == "el_http_key"
@@ -425,19 +426,14 @@ def test_vp14_signed_tts_selection_changes_runtime_factory():
         auth = ws.receive_json()
         assert auth["type"] == "authenticated"
 
-    # 2. Connect with Gemini TTS profile
-    grant_gemini = make_grant(tts_profile="gemini-tts-female-stream")
-    with TestClient(app).websocket_connect(f"/ws/voice/{TEST_SHOP}", headers={"origin": TEST_ORIGIN}) as ws:
-        ws.send_json({"type": "authenticate", "grant": grant_gemini})
-        auth = ws.receive_json()
-        assert auth["type"] == "authenticated"
-
-    # 3. Connect with Groq TTS profile
-    grant_groq = make_grant(tts_profile="groq-orpheus-tts-female")
-    with TestClient(app).websocket_connect(f"/ws/voice/{TEST_SHOP}", headers={"origin": TEST_ORIGIN}) as ws:
-        ws.send_json({"type": "authenticate", "grant": grant_groq})
-        auth = ws.receive_json()
-        assert auth["type"] == "authenticated"
+    # Signed grants cannot activate a retired speech provider in iShop-plus.
+    for retired in ("gemini-tts-female-stream", "groq-orpheus-tts-female", "sahara-tts-female-pidgin"):
+        grant_retired = make_grant(tts_profile=retired)
+        with TestClient(app).websocket_connect(f"/ws/voice/{TEST_SHOP}", headers={"origin": TEST_ORIGIN}) as ws:
+            ws.send_json({"type": "authenticate", "grant": grant_retired})
+            with pytest.raises(WebSocketDisconnect) as rejected:
+                ws.receive_json()
+            assert rejected.value.code == 4404
 
 
 # ---------------------------------------------------------------------------
@@ -491,14 +487,10 @@ def test_vp16_missing_optional_keys_keeps_startup_working():
 # ---------------------------------------------------------------------------
 # VP-17 & VP-18: Cross-Provider Matrix & Spoken Verified Cart Outcome
 # ---------------------------------------------------------------------------
-def test_vp17_cross_provider_matrix_profiles_registered():
+def test_vp17_only_elevenlabs_live_profiles_registered():
     registry = create_default_tts_registry()
     profiles = registry.list_profiles()
-    assert "sahara-tts-female-pidgin" in profiles
-    assert "elevenlabs-tts-female-stream" in profiles
-    assert "elevenlabs-tts-female-ws" in profiles
-    assert "gemini-tts-female-stream" in profiles
-    assert "groq-orpheus-tts-female" in profiles
+    assert set(profiles) == {"elevenlabs-tts-female-stream", "elevenlabs-tts-female-ws"}
 
 
 def test_vp18_verified_cart_result_only_spoken_after_verification():
@@ -559,11 +551,11 @@ def test_vp19_tts_audio_chunk_serialization():
 # ---------------------------------------------------------------------------
 def test_vp20_legacy_profile_migration_and_secret_redaction():
     registry = create_default_tts_registry()
-    # Legacy profile alias points to same provider
+    # Archived voice profiles cannot be activated by a new iShop-plus session.
     legacy = registry.get("sahara-tts-female-pcm")
     current = registry.get("sahara-tts-female-pidgin")
-    assert legacy is current
+    assert legacy is None and current is None
 
     # Diagnostics contain no raw secrets
-    caps = legacy.capabilities
+    caps = registry.get("elevenlabs-tts-female-stream").capabilities
     assert "api_key" not in caps.__dict__

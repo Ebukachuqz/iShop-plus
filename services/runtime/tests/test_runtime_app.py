@@ -36,12 +36,15 @@ def test_health_reports_safe_runtime_configuration() -> None:
     with TestClient(create_runtime_app(settings())) as client:
         response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {
+    health = response.json()
+    assert {name: health[name] for name in ("status", "service", "speech_profile", "audio_recording")} == {
         "status": "ok",
         "service": "ishop-runtime",
-        "speech_profile": "sahara-stream-pcm",
+        "speech_profile": "elevenlabs-scribe-v2-realtime",
         "audio_recording": False,
     }
+    assert health["plus_model"].startswith("gemma-4-")
+    assert health["plus_model_configured"] is False
 
 
 def test_verified_add_receipt_names_quantity_and_hides_default_variant() -> None:

@@ -8,6 +8,15 @@
     clarifying: "I need a little more information", updating: "Updating your cart",
     completed: "Cart update verified", reconnecting: "Reconnecting", failed: "Something went wrong",
   };
+  const ACTIVITY_LABELS = {
+    idle: "Ready when you are", listening: "Listening…", transcribing: "Understanding your voice…",
+    "vision.analyzing": "Understanding your photo…", "vision.searching": "Searching available products…",
+    "vision.ranking": "Comparing matches…", "mission.planning": "Planning your shopping list…",
+    "mission.researching": "Researching products in your store…", "mission.validating": "Checking prices and budget…",
+    "mission.agent.started": "Researching a product category…", "mission.agent.completed": "Product category researched",
+    "approval.waiting": "Ready for your approval", "cart.updating": "Updating your cart…",
+    "cart.verifying": "Verifying cart changes…", speaking: "Drake is speaking", completed: "All set", error: "Please review the message below",
+  };
 
   class CandidateSet {
     constructor(products) {
@@ -89,6 +98,16 @@
       this.continuousTurn = null;
       this.continuousAudioQueue = [];
       this.playback = voice ? new voice.AudioPlayback({ onStatus: (status) => {
+        const previousAudioState = this.root.dataset.audioState;
+        this.root.dataset.audioState = status;
+        if (this.statusText) {
+          if (status === "speaking") {
+            if (previousAudioState !== "speaking") this.statusBeforeSpeaking = this.statusText.textContent;
+            this.statusText.textContent = ACTIVITY_LABELS.speaking;
+          } else if (previousAudioState === "speaking") {
+            this.statusText.textContent = this.statusBeforeSpeaking || STATE_LABELS[this.state.name];
+          }
+        }
         if (!this.audioStatus) return;
         this.audioStatus.textContent = { speaking: "Drake is speaking", blocked: "Press Play reply to hear Drake", unavailable: "Audio unavailable. Your reply is shown above.", idle: "" }[status] || "";
         this.playButton.hidden = status !== "blocked";
@@ -110,6 +129,16 @@
       this.nativeSearchRefreshing = false;
       this.pageEpoch = 1;
       this.pageContext = null;
+      this.plusMode = "shop";
+      this.plusBusy = false;
+      this.plusRequestId = null;
+      this.selectedImage = null;
+      this.visionReady = false;
+      this.missionReady = false;
+      this.missionProposal = null;
+      this.plusMissionExecuting = false;
+      this.plusCatalogInFlight = new Set();
+      this.plusResultsVisible = false;
       try {
         const shopKey = root.dataset.shopDomain || location.host;
         this.lastRevision = Math.max(0, Number(sessionStorage.getItem(this.revisionKey) || 0));
@@ -176,6 +205,11 @@
       this.closeButton.type = "button";
       this.closeButton.setAttribute("aria-label", "Close Drake assistant");
       header.append(identity, this.closeButton);
+      this.orbSurface = element("div", "drake-orb-surface");
+      this.orb = element("div", "drake-orb");
+      this.orb.setAttribute("aria-hidden", "true");
+      this.orb.append(element("span", "drake-orb__ring"), element("span", "drake-orb__core", "D"));
+      this.orbSurface.append(this.orb);
       this.status = element("div", "drake-status");
       this.status.setAttribute("role", "status");
       this.status.setAttribute("aria-live", "polite");
@@ -196,6 +230,32 @@
         this.caption,
         this.error,
       );
+      this.featureControls = element("div", "drake-features");
+      this.featureControls.setAttribute("aria-label", "Shopping modes");
+      this.shopModeButton = element("button", "drake-feature", "Chat");
+      this.visionButton = element("button", "drake-feature", "＋ Photo");
+      this.missionButton = element("button", "drake-feature", "Missions");
+      for (const button of [this.shopModeButton, this.visionButton, this.missionButton]) button.type = "button";
+      this.shopModeButton.setAttribute("aria-pressed", "true");
+      this.missionButton.setAttribute("aria-pressed", "false");
+      this.visionButton.setAttribute("aria-pressed", "false");
+      this.imageInput = element("input", "drake-image-input");
+      this.imageInput.type = "file";
+      this.imageInput.accept = "image/jpeg,image/png,image/webp";
+      this.imageInput.setAttribute("aria-label", "Attach a product photo for Vision");
+      this.imageInput.hidden = true;
+      this.featureControls.append(this.shopModeButton, this.visionButton, this.missionButton, this.imageInput);
+      this.attachment = element("div", "drake-attachment");
+      this.attachment.hidden = true;
+      this.attachmentImage = element("img", "drake-attachment__preview");
+      this.attachmentImage.alt = "Selected product photo";
+      this.attachmentLabel = element("span", "drake-attachment__label");
+      this.removeImageButton = element("button", "drake-feature", "Remove");
+      this.removeImageButton.type = "button";
+      this.attachment.append(this.attachmentImage, this.attachmentLabel, this.removeImageButton);
+      this.proposalPanel = element("div", "drake-proposal");
+      this.proposalPanel.hidden = true;
+      this.conversation.insertBefore(this.proposalPanel, this.caption);
       const form = element("form", "drake-composer");
       this.textInput = element("input", "drake-text-input");
       this.textInput.type = "text";
@@ -233,7 +293,7 @@
       this.editVoiceButton.title = "Edit the recognized words, then send a new request";
       controls.append(this.audioStatus, this.playButton, this.editVoiceButton);
       this.privacy = element("p", "drake-privacy", "Your microphone starts only when you press Start speaking or Start conversation.");
-      this.panel.append(header, this.status, this.conversation, form, controls, this.privacy);
+      this.panel.append(header, this.orbSurface, this.status, this.conversation, this.attachment, this.featureControls, form, controls, this.privacy);
       this.root.replaceChildren(this.launcher, this.panel);
     }
     bind() {
@@ -243,6 +303,11 @@
       this.stopButton.addEventListener("click", () => this.finishListening());
       this.conversationButton.addEventListener("click", () => this.startConversation());
       this.endConversationButton.addEventListener("click", () => this.endConversation());
+      this.shopModeButton.addEventListener("click", () => this.setPlusMode("shop"));
+      this.visionButton.addEventListener("click", () => this.imageInput.click());
+      this.missionButton.addEventListener("click", () => this.setPlusMode(this.plusMode === "mission" ? "shop" : "mission"));
+      this.imageInput.addEventListener("change", () => this.selectImage(this.imageInput.files?.[0]));
+      this.removeImageButton.addEventListener("click", () => this.clearImage());
       if (typeof document.addEventListener === "function") document.addEventListener("visibilitychange", () => {
         if (document.hidden && this.continuousMode && !this.navigationInProgress) this.endConversation("Conversation paused because this tab is hidden.");
       });
@@ -342,7 +407,9 @@
     setState(name, detail) {
       const view = this.state.transition(name, detail);
       this.root.dataset.state = view.name;
-      this.statusText.textContent = view.label;
+      this.statusBeforeSpeaking = view.label;
+      this.statusText.textContent = this.root.dataset.audioState === "speaking" ? ACTIVITY_LABELS.speaking : view.label;
+      this.root.dataset.activity = name === "listening" ? "listening" : name === "failed" ? "error" : ["interpreting", "checking", "updating"].includes(name) ? "working" : "idle";
       this.error.textContent = view.error;
       this.error.hidden = !view.error;
       const busy = ["listening", "interpreting", "checking", "updating", "reconnecting"].includes(view.name);
@@ -391,17 +458,21 @@
       this.setState("ready");
     }
     async submitText() {
-      const text = this.textInput.value.trim();
+      const text = this.textInput.value.trim() || (this.selectedImage ? "Find products like this photo." : "");
       if (!text) return;
       if (this.playback) this.playback.interrupt();
       this.textInput.value = "";
       this.addMessage("shopper", text);
       this.state.acceptFinal(text);
       if (this.handleBrowserControl(text)) return;
-      await this.submitShoppingRequest(text);
+      if (this.shouldUsePlus?.(text)) { await this.submitPlusRequest(text); return; }
+      if (this.plusResultsVisible) await this.submitLegacyShoppingRequest(text);
+      else await this.submitShoppingRequest(text);
     }
     handleVoiceEvent(event) {
-      if (event.type === "partial_transcript") {
+      if (String(event.type || "").startsWith("plus_")) {
+        this.handlePlusEvent(event);
+      } else if (event.type === "partial_transcript") {
         this.state.setPartial(event.text);
         this.caption.textContent = event.text || "";
       } else if (event.type === "final_transcript") {
@@ -417,7 +488,9 @@
         this.caption.textContent = "";
         this.addMessage("shopper", finalText);
         if (this.handleBrowserControl(finalText)) return;
-        this.submitShoppingRequest(finalText);
+        if (this.shouldUsePlus?.(finalText)) { this.submitPlusRequest(finalText); return; }
+        if (this.plusResultsVisible) this.submitLegacyShoppingRequest(finalText);
+        else this.submitShoppingRequest(finalText);
       } else if (event.type === "error") {
         if (event.request_revision != null && Number(event.request_revision) !== Number(this.client?.revision)) return;
         const messages = {
@@ -494,15 +567,309 @@
           if (event.spoken_response) this.addMessage("assistant", event.spoken_response);
           if (receipt.result?.transport_used === "cart_drawer") this.setState("ready");
           else this.setState("completed", { verifiedReceipt: receipt.result });
+          if (this.plusMissionExecuting && this.missionProposal) {
+            this.submitPlusAction("continue");
+          }
         } else {
+          this.plusMissionExecuting = false;
           if (event.spoken_response) this.addMessage("assistant", event.spoken_response);
           const detail = shopperError(receipt.result?.errors?.[0]);
           this.setState("failed", { error: detail, suppressError: Boolean(event.spoken_response) });
         }
         this.pendingTurn = null;
       } else if (event.type === "closed") {
+        this.plusBusy = false;
+        this.plusMissionExecuting = false;
+        this.plusRequestId = null;
+        this.missionProposal = null;
+        if (this.proposalPanel) this.proposalPanel.hidden = true;
         this.setState("reconnecting");
       }
+    }
+
+    setActivity(stage, label = null) {
+      this.root.dataset.activity = stage === "listening" ? "listening" : stage === "error" ? "error" : /^(vision|mission|cart)\./.test(stage) ? "working" : "idle";
+      if (ACTIVITY_LABELS[stage]) {
+        this.statusBeforeSpeaking = typeof label === "string" && label.length <= 160 ? label.replace(/[\r\n]/g, " ") : ACTIVITY_LABELS[stage];
+        this.statusText.textContent = this.root.dataset.audioState === "speaking" ? ACTIVITY_LABELS.speaking : this.statusBeforeSpeaking;
+      }
+    }
+
+    setPlusMode(mode) {
+      if (this.plusMissionExecuting || this.plusBusy) return;
+      if (mode === "mission" && this.plusMode !== "mission") this.missionReady = false;
+      this.plusMode = ["shop", "vision", "mission"].includes(mode) ? mode : "shop";
+      this.shopModeButton.setAttribute("aria-pressed", String(this.plusMode === "shop"));
+      this.visionButton.setAttribute("aria-pressed", String(this.plusMode === "vision"));
+      this.missionButton.setAttribute("aria-pressed", String(this.plusMode === "mission"));
+      this.textInput.placeholder = this.plusMode === "mission"
+        ? "List 2–3 items and your total budget"
+        : this.plusMode === "vision" ? "Add a color, budget, or other preference" : "Ask Drake to find something";
+      this.textInput.focus();
+    }
+
+    async selectImage(file) {
+      if (!file) return;
+      if (!["image/jpeg", "image/png", "image/webp"].includes(file.type) || file.size > 4 * 1024 * 1024 || !file.size) {
+        this.setState("failed", { error: "Choose a JPG, PNG, or WebP photo smaller than 4 MB." });
+        this.imageInput.value = "";
+        return;
+      }
+      try {
+        const dataUrl = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result || ""));
+          reader.onerror = () => reject(new Error("image_read_failed"));
+          reader.readAsDataURL(file);
+        });
+        const data = dataUrl.split(",")[1];
+        if (!data) throw new Error("image_read_failed");
+        this.selectedImage = { mime_type: file.type, data };
+        this.attachmentImage.src = dataUrl;
+        this.attachmentLabel.textContent = `${file.name || "Product photo"} · ready to search`;
+        this.attachment.hidden = false;
+        this.setPlusMode("vision");
+        this.setState("ready");
+      } catch (_) {
+        this.setState("failed", { error: "I couldn’t read that photo. Please choose another image." });
+      }
+    }
+
+    clearImage(keepMode = false) {
+      this.selectedImage = null;
+      this.imageInput.value = "";
+      this.attachmentImage.src = "";
+      this.attachment.hidden = true;
+      if (!keepMode && !this.visionReady) this.setPlusMode("shop");
+    }
+
+    shouldUsePlus(text) {
+      if (!this.selectedImage && !this.plusBusy && ["vision", "mission"].includes(this.plusMode)) {
+        const negative = /\b(?:stop|cancel|reject)\b|(?:don't|don’t|do not)\s+add/i.test(text);
+        const ordinaryAction = /\b(?:open|view|take me to|show (?:me )?(?:my |the )?cart|what.*(?:in|inside).*cart|checkout|check out|go home|go back)\b/i.test(text)
+          || (this.plusMode === "vision" && /\b(?:add|remove|reduce|increase|cart)\b/i.test(text));
+        if (ordinaryAction && !negative) return false;
+      }
+      if (this.selectedImage || this.plusMode === "vision" || this.plusMode === "mission") return true;
+      if (/\b(?:shopping mission|mission:|put together|assemble (?:a |my )?(?:setup|basket|kit)|build (?:me )?(?:a |my )?(?:setup|kit|basket|home.office|desk setup))\b/i.test(text)) {
+        this.setPlusMode("mission");
+        return true;
+      }
+      return false;
+    }
+
+    async submitLegacyShoppingRequest(text) {
+      // Visible Vision cards own their displayed positions. Resolve these locally
+      // before handing the normal action to the existing trusted shopping flow.
+      let groundedText = text;
+      if (!/\bcart\b/i.test(text)) {
+        const match = String(text).match(/\b(?:the\s+)?(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\s+(?:one|product|item|result)\b/i);
+        const indices = { first: 0, second: 1, third: 2, fourth: 3, fifth: 4, '1st': 0, '2nd': 1, '3rd': 2, '4th': 3, '5th': 4 };
+        const product = match ? this.candidates.products[indices[match[1].toLowerCase()]] : null;
+        if (product) groundedText = String(text).replace(match[0], `the product named "${product.title}"`);
+      }
+      await this.submitShoppingRequest(groundedText, {
+        query: "Products displayed in Drake", products: this.candidates.products,
+      });
+    }
+
+    async submitPlusRequest(text) {
+      if (this.missionProposal && /\b(?:stop|cancel|reject)\b|(?:don't|don’t|do not)\s+add/i.test(text)) {
+        this.plusMissionExecuting = false;
+        await this.submitPlusAction("reject");
+        return;
+      }
+      if (this.plusBusy) {
+        this.addMessage("assistant", "Please let this request finish before starting another. Cart approval is a separate step.");
+        return;
+      }
+      if (this.plusMode === "vision" && !this.selectedImage && !this.visionReady) {
+        this.addMessage("assistant", "Attach a product photo first, then tell me your preferences.");
+        this.setState("ready");
+        return;
+      }
+      const missionRefinement = this.plusMode === "mission" && this.missionReady && !/\bnew mission\b/i.test(text);
+      const feature = this.selectedImage ? "vision" : this.plusMode === "mission" ? (missionRefinement ? "refine" : "mission") : "refine";
+      const image = this.selectedImage;
+      if (this.plusMode === "mission") {
+        this.missionProposal = null;
+        this.proposalPanel.hidden = true;
+      }
+      try {
+        await this.sendPlusPayload({ feature, text, ...(image ? { image } : {}) });
+        if (image) this.clearImage(true);
+        this.setActivity(feature === "mission" ? "mission.planning" : "vision.analyzing");
+      } catch (_) {
+        this.plusBusy = false;
+        this.setState("failed", { error: "Drake could not start this request. Please reconnect and try again." });
+      }
+    }
+
+    async sendPlusPayload(payload) {
+      if (!this.client?.sendPlusRequest) throw new Error("plus_transport_unavailable");
+      await this.client.connect();
+      const requestId = `plus_${crypto.randomUUID().replaceAll("-", "")}`;
+      this.plusRequestId = requestId;
+      this.client.revision = Math.max(Number(this.client.revision || 0), this.lastRevision) + 1;
+      this.lastRevision = this.client.revision;
+      try { sessionStorage.setItem(this.revisionKey, String(this.lastRevision)); } catch (_) {}
+      this.plusBusy = true;
+      this.setState("interpreting");
+      this.client.sendPlusRequest({
+        ...payload, request_id: requestId, page_epoch: this.pageEpoch,
+        request_revision: this.client.revision, currency: window.Shopify?.currency?.active || "USD",
+        shop_id: this.root.dataset.shopDomain || location.host, observed_at_ms: Date.now(),
+      });
+    }
+
+    async submitPlusAction(feature) {
+      const proposal = this.missionProposal;
+      if (!proposal || (feature === "approve" && this.plusBusy)) return;
+      try {
+        if (feature === "reject") this.plusMissionExecuting = false;
+        this.plusBusy = true;
+        if (feature === "approve") this.addMessage("shopper", "Approve this basket and add the listed quantities to my cart.");
+        if (this.approveMissionButton) this.approveMissionButton.disabled = true;
+        if (this.rejectMissionButton) this.rejectMissionButton.disabled = true;
+        const extra = {};
+        if (["approve", "continue"].includes(feature)) {
+          if (!this.bridge || !this.catalog) throw new Error("store_unavailable");
+          this.setActivity(feature === "approve" ? "mission.validating" : "cart.verifying");
+          let cart = await this.bridge.readAuthoritativeCart();
+          if (typeof this.bridge.describeCart === "function") cart = await this.bridge.describeCart(cart);
+          extra.current_cart = cart;
+          extra.available_tools = [
+            ...(typeof this.bridge.getAvailableTools === "function" ? await this.bridge.getAvailableTools() : []),
+            ...(typeof this.catalog.getAvailableTools === "function" ? await this.catalog.getAvailableTools() : []),
+          ];
+          if (["approve", "continue"].includes(feature)) {
+            extra.products = [];
+            for (const item of proposal.items || []) {
+              const handle = item.handle || item.product?.handle;
+              if (!handle || typeof this.catalog.getByHandle !== "function") throw new Error("product_recheck_unavailable");
+              const product = await this.catalog.getByHandle(handle);
+              if (!product) throw new Error("product_unavailable");
+              extra.products.push(product);
+            }
+          }
+        }
+        await this.sendPlusPayload({ feature, proposal_id: proposal.proposal_id, revision: proposal.revision, ...extra });
+        if (feature === "reject") {
+          this.proposalPanel.hidden = true;
+          this.plusMissionExecuting = false;
+        }
+      } catch (_) {
+        this.plusBusy = false;
+        this.plusMissionExecuting = false;
+        this.setState("failed", { error: "I couldn’t recheck this proposal. No further cart changes were requested. Please review your cart and try a new mission." });
+      }
+    }
+
+    async retrievePlusCatalog(event) {
+      const key = event.request_id;
+      if (!key || key !== this.plusRequestId || this.plusCatalogInFlight.has(key)) return;
+      this.plusCatalogInFlight.add(key);
+      this.setActivity(event.feature === "mission" ? "mission.researching" : "vision.searching");
+      try {
+        const results = [];
+        for (const task of (event.queries || []).slice(0, 3)) {
+          const query = String(task.query || "").trim().slice(0, 200);
+          if (!query || !task.agent_id) continue;
+          try {
+            const found = await this.catalog.search(query, 8);
+            results.push({ agent_id: task.agent_id, query, products: (found.products || []).slice(0, 8), source: found.source || "catalog_adapter", observed_at_ms: Date.now() });
+          } catch (_) {
+            results.push({ agent_id: task.agent_id, query, products: [], error: "catalog_read_failed", observed_at_ms: Date.now() });
+          }
+        }
+        if (key !== this.plusRequestId) return;
+        this.pendingCatalogProducts = results.flatMap((result) => result.products);
+        this.client.sendPlusCatalogResult({ request_id: key, feature: event.feature || (this.plusMode === "mission" ? "mission" : "vision"), results, shop_id: this.root.dataset.shopDomain || location.host, observed_at_ms: Date.now() });
+      } catch (_) {
+        this.plusBusy = false;
+        this.setState("failed", { error: "I couldn’t read this store’s catalog. Please try again." });
+      } finally {
+        this.plusCatalogInFlight.delete(key);
+      }
+    }
+
+    handlePlusEvent(event) {
+      if (event.request_id && event.request_id !== this.plusRequestId) return;
+      if (event.type === "plus_activity") { this.setActivity(event.stage, event.label); return; }
+      if (event.type === "plus_catalog_request") { this.retrievePlusCatalog(event); return; }
+      if (event.type !== "plus_result") return;
+      const message = event.message || event.spoken_response;
+      if (message) this.addMessage("assistant", message);
+      this.playTts(event.tts_audio_chunks);
+      this.plusBusy = event.status === "executing";
+      if (event.feature === "mission" && event.status !== "error") this.missionReady = true;
+      if (Array.isArray(event.products)) {
+        this.renderProducts(event.products);
+        this.plusResultsVisible = true;
+        if (["vision", "refine"].includes(event.feature) && event.status !== "error") this.visionReady = true;
+      }
+      if (event.proposal) {
+        this.missionProposal = event.proposal;
+        this.renderMissionProposal(event.proposal);
+        if (event.status === "executing") {
+          this.approveMissionButton.disabled = true;
+          this.approveMissionButton.textContent = "Adding approved basket…";
+          this.rejectMissionButton.disabled = false;
+          this.rejectMissionButton.textContent = "Stop remaining items";
+          this.editMissionButton.disabled = true;
+        }
+      }
+      if (event.authorized_command) {
+        this.plusMissionExecuting = true;
+        this.setActivity("cart.updating");
+        this.executeAuthorizedCommand(event.authorized_command);
+      } else if (event.status === "error") {
+        this.plusMissionExecuting = false;
+        this.setState("failed", { suppressError: Boolean(message), error: message || "This request could not be completed." });
+      } else {
+        if (["completed", "rejected", "cancelled", "canceling"].includes(event.status)) {
+          this.plusMissionExecuting = false;
+          this.proposalPanel.hidden = true;
+          this.missionProposal = null;
+          if (event.feature === "mission" && event.status === "completed") this.setPlusMode("shop");
+        }
+        this.setState("ready");
+        if (event.proposal) this.setActivity("approval.waiting");
+        else if (event.products?.length) this.statusText.textContent = `Found ${event.products.length} products`;
+      }
+    }
+
+    renderMissionProposal(proposal) {
+      this.proposalPanel.replaceChildren();
+      this.proposalPanel.hidden = false;
+      this.proposalPanel.append(element("h3", "drake-card__title", "Your proposed basket"));
+      if (Array.isArray(proposal.agents) && proposal.agents.length) {
+        const trace = element("div", "drake-research");
+        trace.append(element("p", "drake-card__variant", `${proposal.agents.length} independently scoped research agents`));
+        for (const agent of proposal.agents) {
+          trace.append(element("p", "drake-card__variant", `${agent.category}: ${(agent.candidate_variant_ids || []).length} verified options researched`));
+        }
+        this.proposalPanel.append(trace);
+      }
+      for (const item of proposal.items || []) {
+        const price = item.price || {};
+        this.proposalPanel.append(element("p", "drake-card__variant", `${item.quantity || 1} × ${item.title || item.product_title || item.product?.title || "Product"} · ${price.amount ?? item.unit_price ?? ""} ${price.currency || proposal.currency || ""} each`));
+      }
+      const subtotal = proposal.subtotal || {};
+      this.proposalPanel.append(element("p", "drake-proposal__total", `Subtotal: ${subtotal.amount ?? proposal.subtotal_amount ?? subtotal} ${subtotal.currency || proposal.currency || ""}`));
+      this.proposalPanel.append(element("p", "drake-card__variant", "Before shipping and tax. I will recheck prices and stock before adding these items. Existing cart items are kept."));
+      this.approveMissionButton = element("button", "drake-send", "Approve & add basket");
+      this.approveMissionButton.type = "button";
+      this.approveMissionButton.addEventListener("click", () => this.submitPlusAction("approve"));
+      this.rejectMissionButton = element("button", "drake-feature", "Reject");
+      this.rejectMissionButton.type = "button";
+      this.rejectMissionButton.addEventListener("click", () => this.submitPlusAction("reject"));
+      this.editMissionButton = element("button", "drake-feature", "Edit mission");
+      this.editMissionButton.type = "button";
+      this.editMissionButton.addEventListener("click", () => { this.setPlusMode("mission"); this.textInput.focus(); });
+      const controls = element("div", "drake-proposal__controls");
+      controls.append(this.approveMissionButton, this.rejectMissionButton, this.editMissionButton);
+      this.proposalPanel.append(controls);
     }
 
     playTts(chunks) {
@@ -532,7 +899,19 @@
       this.cards.replaceChildren();
       this.candidates.products.forEach((product, index) => {
         const card = element("article", "drake-card");
+        if (product.image_url) {
+          try {
+            const imageUrl = new URL(product.image_url, location.origin);
+            if (imageUrl.protocol === "https:") {
+              const image = element("img", "drake-card__image");
+              image.src = imageUrl.toString(); image.alt = product.title;
+              image.loading = "lazy"; image.referrerPolicy = "no-referrer";
+              card.append(image);
+            }
+          } catch (_) {}
+        }
         card.append(element("h3", "drake-card__title", `${index + 1}. ${product.title}`));
+        if (product.match_reason) card.append(element("p", "drake-card__variant", product.match_reason));
         (product.variants || []).slice(0, 3).forEach((variant) => {
           const options = Object.entries(variant.selected_options || {}).map(([key, value]) => `${key}: ${value}`).join(" · ");
           const price = variant.price ? `${variant.price.amount} ${variant.price.currency}` : "Price unavailable";
@@ -541,10 +920,21 @@
         const choose = element("button", "drake-card__choose", `Choose ${index + 1}`);
         choose.type = "button";
         choose.addEventListener("click", () => {
+          this.setPlusMode("shop");
           this.textInput.value = product.title;
           this.textInput.focus();
         });
         card.append(choose);
+        try {
+          const path = product.handle ? `/products/${encodeURIComponent(product.handle)}` : product.url;
+          const destination = new URL(path, location.origin);
+          if (path && destination.origin === location.origin && /^\/(?:[a-z]{2}(?:-[A-Z]{2})?\/)?products\//.test(destination.pathname)) {
+            const link = element("a", "drake-card__open", "Open product");
+            link.href = destination.toString();
+            link.addEventListener("click", () => { this.navigationInProgress = true; });
+            card.append(link);
+          }
+        } catch (_) {}
         this.cards.append(card);
       });
     }
@@ -921,7 +1311,7 @@
     }
   }
 
-  window.IShopDrakeWidget = { CandidateSet, DrakeWidget, WidgetState, STATE_LABELS, shopperError };
+  window.IShopDrakeWidget = { CandidateSet, DrakeWidget, WidgetState, STATE_LABELS, ACTIVITY_LABELS, shopperError };
   const root = document.getElementById("ishop-drake-root");
   if (root && window.IShopVoiceSession) {
     const widget = new DrakeWidget(root, window.IShopVoiceSession);

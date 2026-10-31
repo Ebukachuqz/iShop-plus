@@ -4,9 +4,9 @@ import db from "./db.server";
 import { normalizeProfileSelection, validateProfileSelection, type ProviderRole } from "./provider-profiles.server";
 
 export const DEFAULT_SELECTION: Record<ProviderRole, string> = {
-  asr: "sahara-stream-pcm",
+  asr: "elevenlabs-scribe-v2-realtime",
   llm: "gemini-flash",
-  tts: "sahara-tts-female-pidgin",
+  tts: "elevenlabs-tts-female-stream",
 };
 
 export class StaleConfigurationError extends Error {}
@@ -79,11 +79,21 @@ export async function saveMerchantConfiguration(input: {
 export async function getConfigurationSnapshot(shop: string) {
   const configuration = await getMerchantConfiguration(shop);
   const selection = normalizeProfileSelection({
-    asr: configuration.asrProfileId,
+    // Existing iShop installations may still store a retired voice profile.
+    // Every new signed iShop-plus session uses the supported ElevenLabs route.
+    asr: DEFAULT_SELECTION.asr,
     llm: configuration.llmProfileId,
-    tts: configuration.ttsProfileId,
+    tts: configuration.ttsProfileId === "elevenlabs-tts-female-ws"
+      ? configuration.ttsProfileId : DEFAULT_SELECTION.tts,
   });
   const errors = validateProfileSelection(selection);
+  // Speech is optional for typed/image shopping. A missing voice credential is
+  // reported when speech is requested rather than blocking the entire widget.
+  delete errors.asr;
+  delete errors.tts;
+  // Plus uses its own Gemma model. A previously saved ordinary-chat provider
+  // without credentials must not prevent Vision/Missions from opening.
+  if (["gemini-flash", "groq-gpt-oss-120b"].includes(selection.llm)) delete errors.llm;
   if (Object.keys(errors).length) throw new InvalidConfigurationError(errors);
   return { revision: configuration.revision, selection };
 }

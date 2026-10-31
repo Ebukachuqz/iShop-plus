@@ -26,6 +26,7 @@ from ishop.speech import (
 )
 from ishop.tts import create_default_tts_registry
 from ishop.transport.websocket import create_voice_app
+from ishop.plus import GemmaClient, PlusWorkflow
 
 
 logger = logging.getLogger(__name__)
@@ -35,10 +36,7 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
     active = settings or RuntimeSettings.from_environment()
 
     session_factories = {
-        "sahara-stream-pcm": lambda **kwargs: SaharaStreamingSession(api_key=active.sahara_api_key, **kwargs),
         "elevenlabs-scribe-v2-realtime": lambda **kwargs: ElevenLabsScribeRealtimeSession(api_key=active.elevenlabs_api_key or "", **kwargs),
-        "assemblyai-v3-realtime": lambda **kwargs: AssemblyAiStreamingSession(api_key=active.assemblyai_api_key or "", **kwargs),
-        "gemini-3.5-transcribe-live": lambda **kwargs: GeminiLiveStreamingSession(api_key=active.gemini_api_key or "", **kwargs),
     }
 
     llm_registry = LlmRegistry()
@@ -66,6 +64,7 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
     session_store = SessionStore(active.state_db_path)
     command_journal = CommandJournal(active.state_db_path)
     command_journal.restart_reconcile()
+    plus_workflow = PlusWorkflow(GemmaClient(api_key=active.gemini_api_key))
 
     async def handle_shopping_turn(payload: dict[str, Any], grant: Any) -> dict[str, Any]:
         llm_provider = selected_llm_provider(grant)
@@ -166,7 +165,7 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
         return response
 
     async def synthesize_shopping_text(text: str, revision: int, grant: Any = None):
-        profile_id = getattr(grant, "tts_profile_id", "sahara-tts-female-pidgin") if grant else "sahara-tts-female-pidgin"
+        profile_id = getattr(grant, "tts_profile_id", "elevenlabs-tts-female-stream") if grant else "elevenlabs-tts-female-stream"
         provider = tts_registry.get(profile_id)
         if provider is None:
             raise ValueError(f"Unknown TTS profile: {profile_id}")
@@ -187,6 +186,9 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
         grant: Any,
     ) -> dict[str, Any]:
         fallback, facts, intent_operation = _verified_command_response(command, result, verified)
+        if plus_workflow.command_finished(command, result, verified, grant):
+            return {"status": "completed" if verified else "error", "spoken_response": fallback,
+                    "plus_mission": True}
         if not verified:
             return {"status": "error", "spoken_response": fallback}
         intent = ShoppingIntent(
@@ -239,18 +241,15 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
         # revoked after the merchant grant was issued.
         allowed_llm_profiles={profile.profile_id for profile in llm_registry.list_profiles()},
         allowed_tts_profiles={
-            "sahara-tts-female-pidgin",
-            "sahara-tts-female-pcm",
             "elevenlabs-tts-female-stream",
             "elevenlabs-tts-female-ws",
-            "gemini-tts-female-stream",
-            "groq-orpheus-tts-female",
         },
         control_secret=active.control_secret,
         shopping_turn_handler=handle_shopping_turn,
         command_journal=command_journal,
         shopping_tts_handler=synthesize_shopping_text,
         shopping_command_result_handler=handle_command_result,
+        plus_handler=plus_workflow.handle,
     )
 
     @app.get("/health")
@@ -258,7 +257,9 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
         return {
             "status": "ok",
             "service": "ishop-runtime",
-            "speech_profile": "sahara-stream-pcm",
+            "speech_profile": "elevenlabs-scribe-v2-realtime",
+            "plus_model": plus_workflow.model.model,
+            "plus_model_configured": bool(active.gemini_api_key),
             "audio_recording": active.record_audio,
         }
 

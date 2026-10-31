@@ -15,6 +15,7 @@ vi.mock("./db.server", () => ({ default: database }));
 
 import {
   DEFAULT_SELECTION,
+  getConfigurationSnapshot,
   InvalidConfigurationError,
   saveMerchantConfiguration,
   StaleConfigurationError,
@@ -28,6 +29,9 @@ describe("merchant configuration persistence", () => {
     process.env.SAHARA_API_KEY = "configured";
     process.env.GROQ_API_KEY = "configured";
     process.env.ISHOP_ENABLE_SAHARA_PIDGIN_TTS = "true";
+    process.env.ELEVENLABS_API_KEY = "configured";
+    process.env.ISHOP_ENABLE_ELEVENLABS_REALTIME_STT = "true";
+    process.env.ISHOP_ENABLE_ELEVENLABS_HTTP_TTS = "true";
     database.$transaction.mockImplementation(async (operation) => operation(database));
   });
 
@@ -37,9 +41,9 @@ describe("merchant configuration persistence", () => {
 
   test("uses Gemini 3.8 Flash profile for new merchant installations", () => {
     expect(DEFAULT_SELECTION).toEqual({
-      asr: "sahara-stream-pcm",
+      asr: "elevenlabs-scribe-v2-realtime",
       llm: "gemini-flash",
-      tts: "sahara-tts-female-pidgin",
+      tts: "elevenlabs-tts-female-stream",
     });
   });
 
@@ -50,15 +54,15 @@ describe("merchant configuration persistence", () => {
       shop: "shop-a.myshopify.com",
       expectedRevision: "revision-1",
       selection: {
-        asr: "sahara-stream-pcm",
+        asr: "elevenlabs-scribe-v2-realtime",
         llm: "groq-gpt-oss-120b",
-        tts: "sahara-tts-female-pcm",
+        tts: "elevenlabs-tts-female-stream",
       },
     });
     expect(database.merchantConfiguration.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { shop: "shop-a.myshopify.com", revision: "revision-1" },
-        data: expect.objectContaining({ ttsProfileId: "sahara-tts-female-pidgin" }),
+        data: expect.objectContaining({ ttsProfileId: "elevenlabs-tts-female-stream" }),
       }),
     );
     expect(database.merchantConfigurationRevision.create).toHaveBeenCalledOnce();
@@ -71,9 +75,9 @@ describe("merchant configuration persistence", () => {
         shop: "shop-a.myshopify.com",
         expectedRevision: "stale",
         selection: {
-          asr: "sahara-stream-pcm",
+          asr: "elevenlabs-scribe-v2-realtime",
           llm: "groq-gpt-oss-120b",
-          tts: "sahara-tts-female-pcm",
+          tts: "elevenlabs-tts-female-stream",
         },
       }),
     ).rejects.toBeInstanceOf(StaleConfigurationError);
@@ -93,5 +97,35 @@ describe("merchant configuration persistence", () => {
       }),
     ).rejects.toBeInstanceOf(InvalidConfigurationError);
     expect(database.$transaction).not.toHaveBeenCalled();
+  });
+
+  test("fresh grants use ElevenLabs for an existing legacy installation without blocking text", async () => {
+    delete process.env.ELEVENLABS_API_KEY;
+    database.merchantConfiguration.findUnique.mockResolvedValue({
+      revision: "existing-revision", asrProfileId: "sahara-stream-pcm",
+      llmProfileId: "groq-gpt-oss-120b", ttsProfileId: "sahara-tts-female-pidgin",
+    });
+    await expect(getConfigurationSnapshot("shop-a.myshopify.com")).resolves.toEqual({
+      revision: "existing-revision", selection: {
+        asr: "elevenlabs-scribe-v2-realtime", llm: "groq-gpt-oss-120b",
+        tts: "elevenlabs-tts-female-stream",
+      },
+    });
+  });
+
+  test("missing ordinary-chat credentials do not block a recognized Plus session", async () => {
+    delete process.env.GROQ_API_KEY;
+    database.merchantConfiguration.findUnique.mockResolvedValue({
+      revision: "existing-revision", asrProfileId: "sahara-stream-pcm",
+      llmProfileId: "groq-gpt-oss-120b", ttsProfileId: "sahara-tts-female-pidgin",
+    });
+    const snapshot = await getConfigurationSnapshot("shop-a.myshopify.com");
+    expect(snapshot.selection.llm).toBe("groq-gpt-oss-120b");
+    database.merchantConfiguration.findUnique.mockResolvedValue({
+      revision: "bad-revision", asrProfileId: "sahara-stream-pcm",
+      llmProfileId: "unrecognized-provider", ttsProfileId: "sahara-tts-female-pidgin",
+    });
+    await expect(getConfigurationSnapshot("shop-a.myshopify.com"))
+      .rejects.toBeInstanceOf(InvalidConfigurationError);
   });
 });

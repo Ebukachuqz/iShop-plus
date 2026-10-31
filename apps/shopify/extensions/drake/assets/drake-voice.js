@@ -65,6 +65,16 @@
       this._send({ type: "shopping_turn", ...payload });
     }
 
+    sendPlusRequest(payload) {
+      if (!payload || typeof payload !== "object") throw new TypeError("plus_request_payload");
+      this._send({ type: "plus_request", ...payload });
+    }
+
+    sendPlusCatalogResult(payload) {
+      if (!payload || typeof payload !== "object") throw new TypeError("plus_catalog_result_payload");
+      this._send({ type: "plus_catalog_result", ...payload });
+    }
+
     sendCommandResult(commandId, result) {
       if (!commandId || !result || typeof result !== "object") throw new TypeError("command_result_payload");
       this._send({ type: "command_result", command_id: commandId, result });
@@ -89,6 +99,11 @@
     _receive(raw) {
       let event;
       try { event = JSON.parse(raw); } catch (_) { return; }
+      // Proposal revisions are independent from voice-turn revisions.
+      if (String(event.type || "").startsWith("plus_")) {
+        this.onEvent(event);
+        return;
+      }
       if (event.type === "authenticated" && (event.protocol_version !== "1.0.0" || event.command_schema_version !== "1.0.0" || event.tool_registry_version !== "1.0.0")) {
         this.onEvent({ type: "error", error_code: "incompatible_runtime", revision: this.revision });
         this.close({ cancel: false });

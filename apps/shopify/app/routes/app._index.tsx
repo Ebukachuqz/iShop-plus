@@ -3,6 +3,7 @@ import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "re
 import { Form, useActionData, useLoaderData } from "react-router";
 
 import {
+  DEFAULT_SELECTION,
   getMerchantConfiguration,
   InvalidConfigurationError,
   saveMerchantConfiguration,
@@ -53,16 +54,18 @@ export default function Index() {
   const result = useActionData<typeof action>();
   const value = result?.ok && result.configuration ? result.configuration : configuration;
   const fields: Array<{ role: ProviderRole; label: string; selected: string }> = [
-    { role: "asr", label: "Speech recognition", selected: value.asrProfileId },
+    { role: "asr", label: "Speech recognition", selected: DEFAULT_SELECTION.asr },
     { role: "llm", label: "Reasoning model", selected: value.llmProfileId },
-    { role: "tts", label: "Drake voice", selected: value.ttsProfileId },
+    { role: "tts", label: "Drake voice", selected: value.ttsProfileId.startsWith("elevenlabs-")
+      ? value.ttsProfileId : DEFAULT_SELECTION.tts },
   ];
 
   return (
-    <s-page heading="iShop">
+    <s-page heading="iShop-plus">
       <s-section heading="Drake provider settings">
         <s-paragraph>
-          Choose from configurations validated by iShop. Changes apply to new shopper sessions.
+          ElevenLabs powers Drake's voice. Vision and Missions use Gemma 4;
+          the reasoning choice below applies to ordinary shopping chat. Changes apply to new shopper sessions.
         </s-paragraph>
         {result?.message ? <p role="status">{result.message}</p> : null}
         <Form method="post">

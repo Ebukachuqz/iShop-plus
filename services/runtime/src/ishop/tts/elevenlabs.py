@@ -13,7 +13,7 @@ from typing import Any
 
 from ishop.tts.base import TtsAudioChunk, TtsCapabilities, TtsProvider, TtsProviderError, TtsSession
 
-DEFAULT_FEMALE_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"  # Rachel
+DEFAULT_FEMALE_VOICE_ID = "EXAVITQu4vr4xnSDxMaL"  # Sarah; verified with account voice listing and synthesis.
 DEFAULT_MODEL_ID = "eleven_flash_v2_5"
 
 
@@ -61,15 +61,15 @@ class ElevenLabsHttpTtsProvider(TtsProvider):
         self,
         api_key: str | None = None,
         *,
-        voice_id: str = DEFAULT_FEMALE_VOICE_ID,
-        model_id: str = DEFAULT_MODEL_ID,
+        voice_id: str | None = None,
+        model_id: str | None = None,
         output_format: str = "pcm_16000",
         endpoint_url: str | None = None,
         opener: Callable[..., Any] | None = None,
     ):
         self._api_key = api_key or os.getenv("ELEVENLABS_API_KEY")
-        self._voice_id = voice_id
-        self._model_id = model_id
+        self._voice_id = voice_id or os.getenv("ELEVENLABS_VOICE_ID") or DEFAULT_FEMALE_VOICE_ID
+        self._model_id = model_id or os.getenv("ELEVENLABS_TTS_MODEL") or DEFAULT_MODEL_ID
         self._output_format = output_format
         self._endpoint_url = endpoint_url or f"https://api.elevenlabs.io/v1/text-to-speech/{self._voice_id}/stream"
         self._opener = opener or urllib.request.urlopen
@@ -173,17 +173,18 @@ class ElevenLabsWsTtsProvider(TtsProvider):
         self,
         api_key: str | None = None,
         *,
-        voice_id: str = DEFAULT_FEMALE_VOICE_ID,
-        model_id: str = DEFAULT_MODEL_ID,
+        voice_id: str | None = None,
+        model_id: str | None = None,
         output_format: str = "pcm_16000",
         endpoint_url: str | None = None,
         connector: Callable[..., Any] | None = None,
     ):
-        if "v3" in model_id.lower():
+        selected_model = model_id or os.getenv("ELEVENLABS_WS_TTS_MODEL") or DEFAULT_MODEL_ID
+        if "v3" in selected_model.lower():
             raise ValueError("eleven_v3 is not supported on stream-input websocket")
         self._api_key = api_key or os.getenv("ELEVENLABS_API_KEY")
-        self._voice_id = voice_id
-        self._model_id = model_id
+        self._voice_id = voice_id or os.getenv("ELEVENLABS_VOICE_ID") or DEFAULT_FEMALE_VOICE_ID
+        self._model_id = selected_model
         self._output_format = output_format
         self._endpoint_url = endpoint_url or f"wss://api.elevenlabs.io/v1/text-to-speech/{self._voice_id}/stream-input"
         self._connector = connector

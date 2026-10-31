@@ -15,7 +15,7 @@ const verifiedProvider = (credential: string, gate: string) =>
   credentialPresent(credential) && explicitlyVerified(gate);
 
 export function providerProfiles(): ProviderProfile[] {
-  return [
+  const profiles: ProviderProfile[] = [
     {
       id: "sahara-stream-pcm",
       role: "asr",
@@ -145,10 +145,15 @@ export function providerProfiles(): ProviderProfile[] {
       disabledReason: "Groq TTS requires a credential and explicit voice/audio verification",
     },
   ];
+  return profiles.map((profile) => profile.role !== "llm" && !profile.id.startsWith("elevenlabs-")
+    ? { ...profile, enabled: false, disabledReason: "iShop-plus live voice uses ElevenLabs only; this profile is retained for archived evaluations" }
+    : profile);
 }
 
 export function profilesForBrowser() {
-  return providerProfiles().map(({ id, role, label, mode, enabled, disabledReason }) => ({
+  return providerProfiles().filter((profile) => profile.role === "llm" ||
+    (profile.id.startsWith("elevenlabs-") && !profile.id.endsWith("-batch")))
+    .map(({ id, role, label, mode, enabled, disabledReason }) => ({
     id,
     role,
     label,
