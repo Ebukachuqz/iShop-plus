@@ -28,7 +28,7 @@ class RuntimeSettings:
         if host not in {"127.0.0.1", "localhost", "0.0.0.0"}:
             raise ValueError("RUNTIME_HOST must be a local bind address")
         try:
-            port = int(os.getenv("RUNTIME_PORT", "8000"))
+            port = int(os.getenv("RUNTIME_PORT") or os.getenv("PORT", "8000"))
         except ValueError as exc:
             raise ValueError("RUNTIME_PORT must be an integer") from exc
         if not 1 <= port <= 65535:
