@@ -35,3 +35,9 @@ Restart FastAPI and refresh the Shopify development preview to load both sides o
 - [Deep Chat connection handlers](https://deepchat.dev/docs/connect/)
 - [ElevenLabs realtime event reference](https://elevenlabs.io/docs/eleven-api/guides/how-to/speech-to-text/realtime/event-reference)
 - [ElevenLabs realtime API](https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime)
+
+## Shopify extension packaging follow-up
+
+Shopify preview rejected the vendor license notice because `.txt` is not an accepted theme-extension asset format. The notice now ships verbatim inside `deep-chat-license.json`; `pnpm vendor:chat` regenerates that accepted format. The Liquid schema now references a small `drake-entry.js` loader, keeping the automatically loaded entry below the 10 KB theme-check threshold while loading the existing voice, chat, and bootstrap scripts in order.
+
+Executed verification: Shopify CLI theme check inspected three files with **no offenses**; all **116 JavaScript tests** and full-app ESLint passed; the **84-assertion Chrome journey** passed through the new entrypoint. Packaging tests reject unsupported asset suffixes, verify the schema entry size, and check the complete vendor notice against the pinned dependency. No live preview publishing or live cart mutation was performed by this check.

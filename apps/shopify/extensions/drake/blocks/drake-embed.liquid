@@ -7,6 +7,7 @@
   data-current-product-handle="{% if product %}{{ product.handle }}{% endif %}"
   data-bootstrap-script-url="{{ 'drake-bootstrap.js' | asset_url }}"
   data-widget-script-url="{{ 'drake-widget.js' | asset_url }}"
+  data-voice-script-url="{{ 'drake-voice.js' | asset_url }}"
   data-chat-vendor-url="{{ 'deep-chat-2.5.1.js' | asset_url }}"
   data-chat-script-url="{{ 'drake-chat.js' | asset_url }}"
   data-bridge-script-url="{{ 'drake-bridge.js' | asset_url }}"
@@ -19,7 +20,7 @@
 {
   "name": "Drake voice shopping",
   "target": "body",
-  "javascript": "drake-voice.js",
+  "javascript": "drake-entry.js",
   "stylesheet": "drake-bootstrap.css",
   "settings": [
     {
