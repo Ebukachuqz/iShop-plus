@@ -1,0 +1,5 @@
+{$RUNTIME_DOMAIN} {
+    @internal path /internal/*
+    respond @internal 404
+    reverse_proxy runtime:8080
+}

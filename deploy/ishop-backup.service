@@ -1,0 +1,11 @@
+[Unit]
+Description=Verified iShop SQLite backup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/ishop-plus
+EnvironmentFile=/etc/ishop/deploy.env
+ExecStart=/usr/bin/docker compose -f deploy/compose.yaml exec -T runtime python /app/deploy/backup.py
+UMask=0077

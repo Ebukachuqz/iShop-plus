@@ -1,0 +1,50 @@
+name: ishop-plus
+services:
+  runtime:
+    build:
+      context: ..
+      dockerfile: deploy/runtime.Dockerfile
+    container_name: ishop-plus-runtime
+    restart: unless-stopped
+    env_file:
+      - /etc/ishop/runtime.env
+    environment:
+      RUNTIME_HOST: 0.0.0.0
+      RUNTIME_PORT: 8080
+      RUNTIME_DATABASE_PATH: /data/runtime.sqlite3
+      RECORD_AUDIO_ENABLED: "false"
+    volumes:
+      - /var/lib/ishop:/data
+      - /var/backups/ishop:/backups
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      RUNTIME_DOMAIN: ${RUNTIME_DOMAIN:?Set RUNTIME_DOMAIN to your DNS hostname}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      runtime:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+volumes:
+  caddy_data:
+  caddy_config:
