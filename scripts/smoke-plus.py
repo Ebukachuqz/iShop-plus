@@ -66,6 +66,8 @@ async def main(args):
         raise SystemExit("Use a Shopify myshopify.com domain, without a path.")
     currency = args.currency
     workflow = PlusWorkflow()
+    summary["provider"] = workflow.model.provider
+    summary["model"] = workflow.model.model
     grant = SimpleNamespace(
         shop_id=args.shop, anonymous_session_id="read_only_smoke", is_valid_at=lambda now: True
     )

@@ -26,7 +26,7 @@ from ishop.speech import (
 )
 from ishop.tts import create_default_tts_registry
 from ishop.transport.websocket import create_voice_app
-from ishop.plus import GemmaClient, PlusWorkflow
+from ishop.plus import PlusWorkflow, create_gemma_client
 
 
 logger = logging.getLogger(__name__)
@@ -64,7 +64,8 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
     session_store = SessionStore(active.state_db_path)
     command_journal = CommandJournal(active.state_db_path)
     command_journal.restart_reconcile()
-    plus_workflow = PlusWorkflow(GemmaClient(api_key=active.gemini_api_key))
+    plus_workflow = PlusWorkflow(create_gemma_client(google_api_key=active.gemini_api_key,
+                                                    nvidia_api_key=active.nvidia_api_key))
 
     async def handle_shopping_turn(payload: dict[str, Any], grant: Any) -> dict[str, Any]:
         llm_provider = selected_llm_provider(grant)
@@ -259,7 +260,8 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
             "service": "ishop-runtime",
             "speech_profile": "elevenlabs-scribe-v2-realtime",
             "plus_model": plus_workflow.model.model,
-            "plus_model_configured": bool(active.gemini_api_key),
+            "plus_provider": getattr(plus_workflow.model, "provider", "google"),
+            "plus_model_configured": bool(plus_workflow.model.api_key),
             "audio_recording": active.record_audio,
         }
 

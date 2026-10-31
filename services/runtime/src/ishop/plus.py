@@ -134,6 +134,10 @@ def validate_image(image: dict[str, Any]) -> dict[str, str]:
 class GemmaClient:
     """Official generateContent REST API; no keys in URLs, logs, or UI."""
 
+    provider = "google"
+    credential_name = "GEMINI_API_KEY"
+    request_timeout = 30
+
     def __init__(self, api_key: str | None = None, model: str | None = None):
         self.api_key = api_key or os.getenv("GEMINI_API_KEY", "")
         self.model = model or os.getenv("ISHOP_PLUS_GEMMA_MODEL", "gemma-4-26b-a4b-it")
@@ -170,7 +174,9 @@ class GemmaClient:
 
     async def generate(self, prompt: str, schema: type[BaseModel], image=None) -> BaseModel:
         if not self.api_key or self.api_key.startswith("your_"):
-            raise PlusError("Vision and Missions need a configured GEMINI_API_KEY on the runtime.")
+            raise PlusError(
+                f"Vision and Missions need a configured {self.credential_name} on the runtime."
+            )
         parts: list[dict[str, Any]] = [
             {
                 "text": prompt
@@ -189,7 +195,7 @@ class GemmaClient:
                 },
             }
             try:
-                async with asyncio.timeout(35):
+                async with asyncio.timeout(self.request_timeout + 5):
                     response = await asyncio.to_thread(self._post, payload)
                 if not isinstance(response, dict):
                     raise ValueError("Invalid provider response")
@@ -226,6 +232,152 @@ class GemmaClient:
             except TimeoutError:
                 raise PlusError("Gemma took too long. Please try again.") from None
         raise PlusError("Please try again.")
+
+
+class NvidiaGemmaClient(GemmaClient):
+    """Hosted NVIDIA Gemma 4; reuse schema validation without leaking vendor wire types."""
+
+    provider = "nvidia"
+    credential_name = "NVIDIA_API_KEY"
+    request_timeout = 180
+
+    def __init__(self, api_key: str | None = None):
+        self.api_key = api_key if api_key is not None else os.getenv("NVIDIA_API_KEY", "")
+        self.model = "google/gemma-4-31b-it"
+
+    def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
+        content = []
+        for part in payload["contents"][0]["parts"]:
+            if "text" in part:
+                content.append({"type": "text", "text": part["text"]})
+            elif "inlineData" in part:
+                image = part["inlineData"]
+                # Bound hosted NIM payload size independently of the accepted upload size.
+                with Image.open(
+                    io.BytesIO(base64.b64decode(image["data"], validate=True))
+                ) as photo:
+                    photo = photo.convert("RGB")
+                    photo.thumbnail((512, 512))
+                    encoded = io.BytesIO()
+                    photo.save(encoded, format="JPEG", quality=80)
+                image = {
+                    "mimeType": "image/jpeg",
+                    "data": base64.b64encode(encoded.getvalue()).decode("ascii"),
+                }
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{image['mimeType']};base64,{image['data']}"},
+                    }
+                )
+        body = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": content}],
+            "max_tokens": 768,
+            "stream": True,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        request = urllib.request.Request(
+            "https://integrate.api.nvidia.com/v1/chat/completions",
+            data=json.dumps(body).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.request_timeout) as response:
+                if response.status == 202:
+                    raise PlusError(
+                        "NVIDIA is still processing that request. Please try again shortly."
+                    )
+                if "text/event-stream" in getattr(response, "headers", {}).get("Content-Type", ""):
+                    data = self._read_stream(response)
+                else:
+                    data = json.loads(response.read(1024 * 1024))
+        except urllib.error.HTTPError as exc:
+            logger.warning("Gemma request failed provider=nvidia http=%s", exc.code)
+            raise PlusError(
+                f"NVIDIA Gemma is unavailable (HTTP {exc.code}). Please try again shortly."
+            ) from None
+        except TimeoutError:
+            raise PlusError(
+                "NVIDIA Gemma took too long. Please retry or use shopping chat."
+            ) from None
+        except (OSError, ValueError) as exc:
+            if isinstance(exc, PlusError):
+                raise
+            raise PlusError("I could not reach NVIDIA Gemma. Please try again shortly.") from None
+        # Never forward reasoning_content, tool calls, usage, or other provider internals.
+        choices = data.get("choices") if isinstance(data, dict) else None
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise ValueError("NVIDIA returned no valid choices")
+        choice = choices[0]
+        message = choice.get("message")
+        if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+            raise ValueError("NVIDIA returned no text content")
+        if message.get("tool_calls"):
+            raise PlusError("Gemma returned an unexpected action. Please rephrase your request.")
+        if choice.get("finish_reason") == "content_filter":
+            raise PlusError("Gemma could not process that input. Please try another request.")
+        return {
+            "candidates": [
+                {
+                    "finishReason": "MAX_TOKENS"
+                    if choice.get("finish_reason") == "length"
+                    else "STOP",
+                    "content": {"parts": [{"text": message["content"]}]},
+                }
+            ]
+        }
+
+    def _read_stream(self, response):
+        deadline = time.monotonic() + self.request_timeout
+        text = []
+        size = 0
+        finish = None
+        for line in response:
+            size += len(line)
+            if size > 1024 * 1024 or time.monotonic() > deadline:
+                raise PlusError(
+                    "NVIDIA Gemma took too long or returned too much data. Please retry."
+                )
+            if not line.startswith(b"data:"):
+                continue
+            event = line[5:].strip()
+            if event == b"[DONE]":
+                break
+            chunk = json.loads(event)
+            if chunk.get("error"):
+                raise PlusError("NVIDIA could not complete that reply. Please try again.")
+            for choice in chunk.get("choices", []):
+                if choice.get("index", 0) != 0:
+                    continue
+                delta = choice.get("delta") or {}
+                if delta.get("tool_calls"):
+                    raise PlusError(
+                        "Gemma returned an unexpected action. Please rephrase your request."
+                    )
+                if delta.get("content") is not None:
+                    if not isinstance(delta["content"], str):
+                        raise ValueError("Invalid NVIDIA text chunk")
+                    text.append(delta["content"])
+                if choice.get("finish_reason"):
+                    finish = choice["finish_reason"]
+        if finish not in {"stop", "length", "content_filter"}:
+            raise PlusError("NVIDIA's reply was interrupted. Please try again.")
+        return {"choices": [{"finish_reason": finish, "message": {"content": "".join(text)}}]}
+
+
+def create_gemma_client(*, google_api_key=None, nvidia_api_key=None):
+    provider = os.getenv("ISHOP_PLUS_GEMMA_PROVIDER", "google").strip().lower()
+    if provider == "nvidia":
+        return NvidiaGemmaClient(api_key=nvidia_api_key)
+    if provider == "google":
+        return GemmaClient(api_key=google_api_key)
+    raise ValueError("ISHOP_PLUS_GEMMA_PROVIDER must be google or nvidia")
 
 
 def _options_match(product: dict, variant: dict, required: dict[str, str]) -> bool:
@@ -326,7 +478,7 @@ def candidates(
 
 class PlusWorkflow:
     def __init__(self, model=None, clock: Callable[[], int] | None = None):
-        self.model = model or GemmaClient()
+        self.model = model or create_gemma_client()
         self.clock = clock or (lambda: int(time.time() * 1000))
         self.sessions: dict[tuple[str, str], dict] = {}
         self.locks: dict[tuple[str, str], asyncio.Lock] = {}

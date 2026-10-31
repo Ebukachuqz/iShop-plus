@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ishop.config import load_local_environment
-from ishop.plus import GemmaClient, PlusError, VisionSpec, validate_image
+from ishop.plus import PlusError, VisionSpec, create_gemma_client, validate_image
 
 
 async def main():
@@ -26,8 +26,8 @@ async def main():
         "scope": "real Gemma image API only; no store/cart verification",
         "results": [],
     }
-    for model in ("gemma-4-26b-a4b-it", "gemma-4-31b-it"):
-        client = GemmaClient(model=model)
+    for client in [create_gemma_client()]:
+        model = client.model
         try:
             result = await client.generate(
                 "Identify the visible product for catalogue search. Currency USD. "
@@ -37,6 +37,7 @@ async def main():
             )
             report["results"].append(
                 {
+                    "provider": client.provider,
                     "model": model,
                     "status": "passed",
                     "query": result.query,
@@ -44,7 +45,14 @@ async def main():
                 }
             )
         except PlusError as exc:
-            report["results"].append({"model": model, "status": "failed", "message": str(exc)})
+            report["results"].append(
+                {
+                    "provider": client.provider,
+                    "model": model,
+                    "status": "failed",
+                    "message": str(exc),
+                }
+            )
     target = Path("artifacts/runs/gemma-vision-diagnostic.json")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(report, indent=2), encoding="utf-8")
