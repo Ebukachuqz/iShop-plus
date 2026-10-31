@@ -679,6 +679,12 @@
         await this.submitPlusAction("reject");
         return;
       }
+      // Approval must refer unambiguously to the currently displayed proposal.
+      // Qualified answers such as "yes, but cheaper" remain refinements.
+      if (this.missionProposal && !this.plusBusy && /^(?:approve(?: this| the)?(?: basket| proposal)?|yes[, ]+add (?:them|the basket)|add (?:this|the) basket to my cart)[.!]?$/i.test(text.trim())) {
+        await this.submitPlusAction("approve");
+        return;
+      }
       if (this.plusBusy && /^(?:stop|cancel)(?:\s+(?:this|request|search|mission))?[.!]?$/i.test(text.trim())) {
         await this.sendPlusPayload({ feature: "cancel", text });
         return;

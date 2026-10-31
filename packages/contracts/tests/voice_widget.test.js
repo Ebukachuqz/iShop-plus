@@ -933,3 +933,18 @@ test('transport loss clears busy state and prevents an approved mission from res
   assert.equal(widget.proposalPanel.hidden, true);
   assert.equal(widget.state.name, 'reconnecting');
 });
+
+
+test('spoken basket approval is explicit and qualified replies remain refinements', async () => {
+  const { widget, requests } = makePlusWidget();
+  widget.plusMode = 'mission';
+  widget.missionReady = true;
+  widget.missionProposal = { proposal_id: 'current_proposal', revision: 1 };
+  const approvals = [];
+  widget.submitPlusAction = async (action) => approvals.push(action);
+  await widget.submitPlusRequest('Approve this basket');
+  assert.deepEqual(approvals, ['approve']);
+  await widget.submitPlusRequest('Yes, but make it cheaper');
+  assert.deepEqual(approvals, ['approve']);
+  assert.equal(requests[0].feature, 'refine');
+});
