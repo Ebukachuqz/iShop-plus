@@ -65,7 +65,8 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
     command_journal = CommandJournal(active.state_db_path)
     command_journal.restart_reconcile()
     plus_workflow = PlusWorkflow(create_gemma_client(google_api_key=active.gemini_api_key,
-                                                    nvidia_api_key=active.nvidia_api_key))
+                                                    nvidia_api_key=active.nvidia_api_key,
+                                                    openrouter_api_key=active.openrouter_api_key))
 
     async def handle_shopping_turn(payload: dict[str, Any], grant: Any) -> dict[str, Any]:
         llm_provider = selected_llm_provider(grant)

@@ -113,7 +113,7 @@ def test_runtime_selects_nvidia_without_google_key_and_reports_safe_health(monke
 
 def test_unknown_provider_is_rejected(monkeypatch):
     monkeypatch.setenv("ISHOP_PLUS_GEMMA_PROVIDER", "unknown")
-    with pytest.raises(ValueError, match="google or nvidia"):
+    with pytest.raises(ValueError, match="google, nvidia or openrouter"):
         create_gemma_client()
 
 

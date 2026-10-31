@@ -398,13 +398,90 @@ class NvidiaGemmaClient(GemmaClient):
         return {"choices": [{"finish_reason": finish, "message": {"content": "".join(text)}}]}
 
 
-def create_gemma_client(*, google_api_key=None, nvidia_api_key=None):
+class OpenRouterGemmaClient(GemmaClient):
+    """Explicit free Gemma route; no paid or cross-model fallback."""
+
+    provider = "openrouter"
+    credential_name = "OPENROUTER_API_KEY"
+    request_timeout = 90
+
+    def __init__(self, api_key: str | None = None):
+        self.api_key = api_key if api_key is not None else os.getenv("OPENROUTER_API_KEY", "")
+        self.model = "google/gemma-4-31b-it:free"
+
+    def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
+        content = []
+        for part in payload["contents"][0]["parts"]:
+            if "text" in part:
+                content.append({"type": "text", "text": part["text"]})
+            elif "inlineData" in part:
+                image = part["inlineData"]
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{image['mimeType']};base64,{image['data']}"},
+                    }
+                )
+        request = urllib.request.Request(
+            "https://openrouter.ai/api/v1/chat/completions",
+            data=json.dumps(
+                {
+                    "model": self.model,
+                    "messages": [{"role": "user", "content": content}],
+                    "max_tokens": 2300,
+                    "stream": False,
+                    "reasoning": {"enabled": False},
+                    "provider": {"allow_fallbacks": False},
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.request_timeout) as response:
+                raw = response.read(1024 * 1024 + 1)
+                if len(raw) > 1024 * 1024:
+                    raise PlusError("Gemma returned too much data. Please retry.")
+                data = json.loads(raw)
+        except urllib.error.HTTPError as exc:
+            logger.warning("Gemma request failed provider=openrouter http=%s", exc.code)
+            raise PlusError(
+                f"OpenRouter Gemma is unavailable (HTTP {exc.code}). Please try again shortly."
+            ) from None
+        except (OSError, ValueError):
+            raise PlusError(
+                "I could not reach OpenRouter Gemma. Please try again shortly."
+            ) from None
+        if not isinstance(data, dict) or data.get("error"):
+            raise PlusError("OpenRouter could not complete that reply. Please try again.")
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise ValueError("OpenRouter returned no choices")
+        choice = choices[0]
+        message = choice.get("message")
+        if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+            raise ValueError("OpenRouter returned no text")
+        if message.get("tool_calls") or choice.get("finish_reason") not in {"stop", "length"}:
+            raise PlusError("Gemma could not complete that request safely. Please rephrase it.")
+        return {
+            "candidates": [
+                {
+                    "finishReason": "MAX_TOKENS" if choice["finish_reason"] == "length" else "STOP",
+                    "content": {"parts": [{"text": message["content"]}]},
+                }
+            ]
+        }
+
+
+def create_gemma_client(*, google_api_key=None, nvidia_api_key=None, openrouter_api_key=None):
     provider = os.getenv("ISHOP_PLUS_GEMMA_PROVIDER", "google").strip().lower()
+    if provider == "openrouter":
+        return OpenRouterGemmaClient(api_key=openrouter_api_key)
     if provider == "nvidia":
         return NvidiaGemmaClient(api_key=nvidia_api_key)
     if provider == "google":
         return GemmaClient(api_key=google_api_key)
-    raise ValueError("ISHOP_PLUS_GEMMA_PROVIDER must be google or nvidia")
+    raise ValueError("ISHOP_PLUS_GEMMA_PROVIDER must be google, nvidia or openrouter")
 
 
 def _options_match(product: dict, variant: dict, required: dict[str, str]) -> bool:
