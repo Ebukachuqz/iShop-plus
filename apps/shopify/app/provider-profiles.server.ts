@@ -1,3 +1,9 @@
+import { loadDevelopmentProviderEnvironment } from "./provider-env.server";
+import { splitReasoningProfile } from "./reasoning-profile";
+export { splitReasoningProfile, combineReasoningProfile } from "./reasoning-profile";
+
+loadDevelopmentProviderEnvironment();
+
 export type ProviderRole = "asr" | "llm" | "tts";
 
 export type ProviderProfile = {
@@ -170,17 +176,37 @@ export function normalizeProfileSelection(selection: Record<ProviderRole, string
   };
 }
 
+// Store both choices in the existing revisioned, signed reasoning profile.
+// Legacy IDs retain the runtime default; no SQLite migration is required.
+export function plusProviderProfiles() {
+  return [
+    { id: "default", label: "Runtime default", credential: "" },
+    { id: "groq", label: "Groq — Qwen 3.8 27B (preview)", credential: "GROQ_API_KEY" },
+    { id: "openrouter", label: "OpenRouter — Gemma 4 31B (free, rate-limited)", credential: "OPENROUTER_API_KEY" },
+    { id: "nvidia", label: "NVIDIA — Gemma 4 31B", credential: "NVIDIA_API_KEY" },
+    { id: "google", label: "Google — Gemma 4 (image failures observed)", credential: "GEMINI_API_KEY" },
+  ].map(({ id, label, credential }) => ({
+    id, label, enabled: !credential || credentialPresent(credential),
+  }));
+}
+
 export function validateProfileSelection(selection: Record<ProviderRole, string>) {
   const profiles = providerProfiles();
   const normalizedSelection = normalizeProfileSelection(selection);
   const errors: Partial<Record<ProviderRole, string>> = {};
   for (const role of ["asr", "llm", "tts"] as const) {
-    const profile = profiles.find((candidate) => candidate.id === normalizedSelection[role]);
+    const reasoning = splitReasoningProfile(normalizedSelection.llm);
+    const selected = role === "llm" ? reasoning.chat : normalizedSelection[role];
+    const profile = profiles.find((candidate) => candidate.id === selected);
     if (!profile || profile.role !== role) {
       errors[role] = "Choose a recognized profile for this role";
     } else if (!profile.enabled) {
       errors[role] = profile.disabledReason ?? "This profile is unavailable";
     }
   }
+  const reasoning = splitReasoningProfile(normalizedSelection.llm);
+  const plus = plusProviderProfiles().find((candidate) => candidate.id === reasoning.plus);
+  if (!reasoning.valid || !plus) errors.llm = "Choose a recognized Vision and Missions model";
+  else if (!plus.enabled) errors.llm = "The selected Vision and Missions server credential is unavailable";
   return errors;
 }

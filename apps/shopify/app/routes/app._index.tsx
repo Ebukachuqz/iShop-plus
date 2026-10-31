@@ -9,13 +9,14 @@ import {
   saveMerchantConfiguration,
   StaleConfigurationError,
 } from "../merchant-config.server";
-import { profilesForBrowser, type ProviderRole } from "../provider-profiles.server";
+import { profilesForBrowser, plusProviderProfiles, combineReasoningProfile, type ProviderRole } from "../provider-profiles.server";
+import { splitReasoningProfile } from "../reasoning-profile";
 import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const configuration = await getMerchantConfiguration(session.shop);
-  return { configuration, profiles: profilesForBrowser(), defaults: DEFAULT_SELECTION };
+  return { configuration, profiles: profilesForBrowser(), plusProfiles: plusProviderProfiles(), defaults: DEFAULT_SELECTION };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -23,7 +24,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const form = await request.formData();
   const selection: Record<ProviderRole, string> = {
     asr: String(form.get("asr") ?? ""),
-    llm: String(form.get("llm") ?? ""),
+    llm: combineReasoningProfile(String(form.get("llm") ?? ""), String(form.get("plus") ?? "default")),
     tts: String(form.get("tts") ?? ""),
   };
   try {
@@ -50,12 +51,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function Index() {
-  const { configuration, profiles, defaults } = useLoaderData<typeof loader>();
+  const { configuration, profiles, plusProfiles, defaults } = useLoaderData<typeof loader>();
   const result = useActionData<typeof action>();
   const value = result?.ok && result.configuration ? result.configuration : configuration;
   const fields: Array<{ role: ProviderRole; label: string; selected: string }> = [
     { role: "asr", label: "Speech recognition", selected: defaults.asr },
-    { role: "llm", label: "Reasoning model", selected: value.llmProfileId },
+    { role: "llm", label: "Reasoning model", selected: splitReasoningProfile(value.llmProfileId).chat },
     { role: "tts", label: "Drake voice", selected: value.ttsProfileId.startsWith("elevenlabs-")
       ? value.ttsProfileId : defaults.tts },
   ];
@@ -64,7 +65,7 @@ export default function Index() {
     <s-page heading="iShop-plus">
       <s-section heading="Drake provider settings">
         <s-paragraph>
-          ElevenLabs powers Drake's voice. Vision and Missions use Gemma 4;
+          ElevenLabs powers Drake's voice. Choose Vision and Missions independently;
           the reasoning choice below applies to ordinary shopping chat. Changes apply to new shopper sessions.
         </s-paragraph>
         {result?.message ? <p role="status">{result.message}</p> : null}
@@ -91,6 +92,18 @@ export default function Index() {
               ) : null}
             </p>
           ))}
+          <p>
+            <label>
+              Vision and Missions model<br />
+              <select name="plus" defaultValue={splitReasoningProfile(value.llmProfileId).plus}>
+                {plusProfiles.map((profile) => (
+                  <option key={profile.id} value={profile.id} disabled={!profile.enabled}>
+                    {profile.label}{profile.enabled ? "" : " — server key unavailable"}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </p>
           <button type="submit">Save provider settings</button>
         </Form>
       </s-section>

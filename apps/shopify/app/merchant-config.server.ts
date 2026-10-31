@@ -91,7 +91,7 @@ export async function getConfigurationSnapshot(shop: string) {
   // reported when speech is requested rather than blocking the entire widget.
   delete errors.asr;
   delete errors.tts;
-  // Plus uses its own Gemma model. A previously saved ordinary-chat provider
+  // Vision/Missions use an independent multimodal model. A previously saved ordinary-chat provider
   // without credentials must not prevent Vision/Missions from opening.
   if (["gemini-flash", "groq-gpt-oss-120b"].includes(selection.llm)) delete errors.llm;
   if (Object.keys(errors).length) throw new InvalidConfigurationError(errors);

@@ -1,4 +1,4 @@
-"""Bounded Gemma-powered Vision and Missions, behind the existing signed session.
+"""Bounded multimodal Vision and Missions, behind the existing signed session.
 
 Catalogue facts come only from the shopper's existing browser commerce bridge.
 Research agents have no write tools. Cart commands use the existing verifier.
@@ -21,7 +21,7 @@ import urllib.request
 import uuid
 import warnings
 from decimal import Decimal, InvalidOperation
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field
@@ -129,6 +129,14 @@ def validate_image(image: dict[str, Any]) -> dict[str, str]:
     ) as exc:
         raise PlusError("That image could not be decoded. Please choose another photo.") from exc
     return {"mimeType": "image/jpeg", "data": encoded}
+
+
+class MultimodalClient(Protocol):
+    provider: str
+    model: str
+    api_key: str
+
+    async def generate(self, prompt: str, schema: type[BaseModel], image=None) -> BaseModel: ...
 
 
 class GemmaClient:
@@ -402,6 +410,8 @@ class OpenRouterGemmaClient(GemmaClient):
     """Explicit free Gemma route; no paid or cross-model fallback."""
 
     provider = "openrouter"
+    endpoint = "https://openrouter.ai/api/v1/chat/completions"
+    display_name = "OpenRouter Gemma"
     credential_name = "OPENROUTER_API_KEY"
     request_timeout = 90
 
@@ -422,19 +432,15 @@ class OpenRouterGemmaClient(GemmaClient):
                         "image_url": {"url": f"data:{image['mimeType']};base64,{image['data']}"},
                     }
                 )
+        body = self._request_body(content)
         request = urllib.request.Request(
-            "https://openrouter.ai/api/v1/chat/completions",
-            data=json.dumps(
-                {
-                    "model": self.model,
-                    "messages": [{"role": "user", "content": content}],
-                    "max_tokens": 2300,
-                    "stream": False,
-                    "reasoning": {"enabled": False},
-                    "provider": {"allow_fallbacks": False},
-                }
-            ).encode(),
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"},
+            self.endpoint,
+            data=json.dumps(body).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+                "User-Agent": "iShop-plus/0.1",
+            },
             method="POST",
         )
         try:
@@ -444,23 +450,23 @@ class OpenRouterGemmaClient(GemmaClient):
                     raise PlusError("Gemma returned too much data. Please retry.")
                 data = json.loads(raw)
         except urllib.error.HTTPError as exc:
-            logger.warning("Gemma request failed provider=openrouter http=%s", exc.code)
+            logger.warning("Vision request failed provider=%s http=%s", self.provider, exc.code)
             raise PlusError(
-                f"OpenRouter Gemma is unavailable (HTTP {exc.code}). Please try again shortly."
+                f"{self.display_name} is unavailable (HTTP {exc.code}). Please try again shortly."
             ) from None
         except (OSError, ValueError):
             raise PlusError(
-                "I could not reach OpenRouter Gemma. Please try again shortly."
+                f"I could not reach {self.display_name}. Please try again shortly."
             ) from None
         if not isinstance(data, dict) or data.get("error"):
-            raise PlusError("OpenRouter could not complete that reply. Please try again.")
+            raise PlusError(f"{self.display_name} could not complete that reply. Please try again.")
         choices = data.get("choices")
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-            raise ValueError("OpenRouter returned no choices")
+            raise ValueError("Provider returned no choices")
         choice = choices[0]
         message = choice.get("message")
         if not isinstance(message, dict) or not isinstance(message.get("content"), str):
-            raise ValueError("OpenRouter returned no text")
+            raise ValueError("Provider returned no text")
         if message.get("tool_calls") or choice.get("finish_reason") not in {"stop", "length"}:
             raise PlusError("Gemma could not complete that request safely. Please rephrase it.")
         return {
@@ -472,16 +478,79 @@ class OpenRouterGemmaClient(GemmaClient):
             ]
         }
 
+    def _request_body(self, content):
+        return {
+            "model": self.model,
+            "messages": [{"role": "user", "content": content}],
+            "max_tokens": 2300,
+            "stream": False,
+            "reasoning": {"enabled": False},
+            "provider": {"allow_fallbacks": False},
+        }
 
-def create_gemma_client(*, google_api_key=None, nvidia_api_key=None, openrouter_api_key=None):
-    provider = os.getenv("ISHOP_PLUS_GEMMA_PROVIDER", "google").strip().lower()
+
+class GroqVisionClient(OpenRouterGemmaClient):
+    """Groq's documented multimodal Qwen profile, explicitly selected."""
+
+    provider = "groq"
+    endpoint = "https://api.groq.com/openai/v1/chat/completions"
+    display_name = "Groq Qwen"
+    credential_name = "GROQ_API_KEY"
+    request_timeout = 45
+
+    def __init__(self, api_key: str | None = None):
+        self.api_key = api_key if api_key is not None else os.getenv("GROQ_API_KEY", "")
+        self.model = "qwen/qwen3.8-27b"
+
+    def _request_body(self, content):
+        return {
+            "model": self.model,
+            "messages": [{"role": "user", "content": content}],
+            "max_completion_tokens": 768,
+            "stream": False,
+            "response_format": {"type": "json_object"},
+            "reasoning_effort": "none",
+        }
+
+
+PLUS_PROVIDERS = ("google", "nvidia", "openrouter", "groq")
+CHAT_PROFILES = ("gemini-flash", "groq-gpt-oss-120b")
+
+
+def split_reasoning_profile(profile):
+    """Signed profile encodes independent choices without changing SQLite schema."""
+    parts = str(profile).split("|plus=")
+    if len(parts) == 1:
+        return parts[0], None
+    if len(parts) != 2 or parts[0] not in CHAT_PROFILES or parts[1] not in PLUS_PROVIDERS:
+        raise ValueError("Unknown reasoning profile")
+    return parts[0], parts[1]
+
+
+def allowed_reasoning_profiles():
+    return set(CHAT_PROFILES) | {
+        f"{chat}|plus={provider}" for chat in CHAT_PROFILES for provider in PLUS_PROVIDERS
+    }
+
+
+def create_gemma_client(
+    *,
+    google_api_key=None,
+    nvidia_api_key=None,
+    openrouter_api_key=None,
+    groq_api_key=None,
+    provider=None,
+):
+    provider = (provider or os.getenv("ISHOP_PLUS_GEMMA_PROVIDER", "google")).strip().lower()
+    if provider == "groq":
+        return GroqVisionClient(api_key=groq_api_key)
     if provider == "openrouter":
         return OpenRouterGemmaClient(api_key=openrouter_api_key)
     if provider == "nvidia":
         return NvidiaGemmaClient(api_key=nvidia_api_key)
     if provider == "google":
         return GemmaClient(api_key=google_api_key)
-    raise ValueError("ISHOP_PLUS_GEMMA_PROVIDER must be google, nvidia or openrouter")
+    raise ValueError("ISHOP_PLUS_GEMMA_PROVIDER must be google, nvidia, openrouter or groq")
 
 
 def _options_match(product: dict, variant: dict, required: dict[str, str]) -> bool:
@@ -581,7 +650,9 @@ def candidates(
 
 
 class PlusWorkflow:
-    def __init__(self, model=None, clock: Callable[[], int] | None = None):
+    def __init__(
+        self, model: MultimodalClient | None = None, clock: Callable[[], int] | None = None
+    ):
         self.model = model or create_gemma_client()
         self.clock = clock or (lambda: int(time.time() * 1000))
         self.sessions: dict[tuple[str, str], dict] = {}

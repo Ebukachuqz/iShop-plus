@@ -1,13 +1,13 @@
 # iShop-plus
 
-iShop-plus extends [iShop](https://github.com/Ebukachuqz/iShop) with visual product discovery and shopping missions. Its storefront assistant, **Drake**, accepts a photo, a typed request, or speech and works with the current Shopify store's real catalogue. **Gemma 4** interprets images and coordinates product research; **ElevenLabs** handles live transcription and spoken replies.
+iShop-plus extends [iShop](https://github.com/Ebukachuqz/iShop) with visual product discovery and shopping missions. Its storefront assistant, **Drake**, accepts a photo, a typed request, or speech and works with the current Shopify store's real catalogue. **Gemma 4 or Groq Qwen** interprets images and coordinates product research; **ElevenLabs** handles live transcription and spoken replies.
 
 iShop is designed for shoppers who may not be comfortable navigating online stores, shoppers with accessibility needs, and anyone who finds it easier to describe what they want than to work through menus and filters. Drake supports English and Nigerian Pidgin interactions, including code-switched requests.
 
 ## New in iShop-plus
 
 - **Vision:** attach a JPEG, PNG, or WebP product photo and add preferences to find up to five available catalogue alternatives. Refine with “only black” or a price cap. Results are approximate alternatives, never a claim of exact visual identity.
-- **Missions:** request two or three product categories and a subtotal budget. A Gemma coordinator creates separate scopes; independently invoked, read-only Gemma workers assess each category against actual catalogue candidates. A deterministic composer checks price, quantity, availability, and currency before proposing a basket.
+- **Missions:** request two or three product categories and a subtotal budget. The selected multimodal model creates separate coordinator scopes; independently invoked, read-only research workers assess each category against actual catalogue candidates. A deterministic composer checks price, quantity, availability, and currency before proposing a basket.
 - **Approval and verification:** review, edit, reject, or explicitly approve the exact mission proposal. Approval rechecks products and the existing cart. Writes run serially through the established Shopify browser bridge and are verified afterward; existing cart items are preserved.
 - **Animated Drake:** a navy/violet/cyan orb shows listening, working, and speaking states. Its activity line follows real workflow/audio events, with a static reduced-motion fallback.
 - **Three input modes:** text, images, and ElevenLabs Scribe v2 Realtime speech. ElevenLabs streaming TTS supplies Drake's replies. Text and image inputs remain available if voice is unavailable.
@@ -15,7 +15,7 @@ iShop is designed for shoppers who may not be comfortable navigating online stor
 The existing Shopify app, signed sessions, FastAPI WebSocket runtime, browser commerce tools, and cart read-back verifier are retained. The new `ishop.plus` module adds bounded Vision/Missions orchestration; the existing widget adds photo ingress, proposals, and activity display. No broad platform rewrite is required. Product and variant identities come from store evidence, never model-created records. The original iShop repository is maintained separately.
 
 ```text
-Drake photo/text/voice -> signed WebSocket -> Gemma 4 Plus workflow
+Drake photo/text/voice -> signed WebSocket -> selected multimodal Plus workflow
   -> current-store browser catalogue -> verified alternatives / basket proposal
   -> explicit approval -> serial Shopify cart tools -> fresh cart read-back
 ```
@@ -101,6 +101,7 @@ At minimum, configure:
 - `DEV_ALLOWED_SHOP_DOMAINS`
 - `DEV_ALLOWED_ORIGINS`
 - `SESSION_SIGNING_SECRET` with at least 32 random characters
+- `GROQ_API_KEY` and `ISHOP_PLUS_GEMMA_PROVIDER=groq` select `qwen/qwen3.8-27b` for Vision/Missions. In Shopify admin, open iShop-plus → Drake provider settings → **Vision and Missions model** to switch independently of ordinary chat. Save, then open a new shopper session. Keys must be available to both the app server (choice eligibility) and runtime (inference).
 - `NVIDIA_API_KEY` and `ISHOP_PLUS_GEMMA_PROVIDER=nvidia` for hosted `google/gemma-4-31b-it`
 - Optional `OPENROUTER_API_KEY` and `ISHOP_PLUS_GEMMA_PROVIDER=openrouter` select `google/gemma-4-31b-it:free` exclusively. Free availability is rate-limited; authenticated image tests currently fail with an upstream HTTP 429; successful image processing remains unverified.
 - Alternatively `ISHOP_PLUS_GEMMA_PROVIDER=google`, `GEMINI_API_KEY`, and `ISHOP_PLUS_GEMMA_MODEL` select the original Google route; its image requests failed in the tested account

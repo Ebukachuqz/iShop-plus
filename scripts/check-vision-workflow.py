@@ -1,10 +1,12 @@
 """Real selected-provider Vision/refinement probe; synthetic catalogue, no cart writes."""
 
+import argparse
 import asyncio
 import base64
 import json
 import time
 import urllib.request
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,12 +16,15 @@ from ishop.plus import PlusWorkflow
 load_local_environment(Path(".env"))
 
 
-async def main():
+async def main(pause_seconds=0):
     raw = urllib.request.urlopen(
         "https://storage.googleapis.com/generativeai-downloads/images/croissant.jpg", timeout=20
     ).read()
     reports = []
     for iteration in range(2):
+        if iteration and pause_seconds:
+            print(json.dumps({"cooldown_seconds": pause_seconds}), flush=True)
+            await asyncio.sleep(pause_seconds)
         w = PlusWorkflow()
         g = SimpleNamespace(
             shop_id="fixture.myshopify.com",
@@ -46,6 +51,9 @@ async def main():
                 }
             ],
         }
+        second = deepcopy(p)
+        second.update(product_id="croissant2", title="Butter Croissant", handle="croissant2")
+        second["variants"][0].update(variant_id="v2", product_id="croissant2")
         report = {
             "run": iteration + 1,
             "scope": f"real {w.model.provider} + synthetic catalogue; no cart writes",
@@ -73,7 +81,8 @@ async def main():
                         "shop_id": g.shop_id,
                         "observed_at_ms": int(time.time() * 1000),
                         "results": [
-                            {"agent_id": q["agent_id"], "products": [p]} for q in e["queries"]
+                            {"agent_id": q["agent_id"], "products": [p, second]}
+                            for q in e["queries"]
                         ],
                     },
                     g,
@@ -81,7 +90,8 @@ async def main():
                 )
 
             r = await catalogue(e)
-            assert [x["product_id"] for x in r.get("products", [])] == ["croissant"]
+            ids = {x["product_id"] for x in r.get("products", [])}
+            assert ids and ids <= {"croissant", "croissant2"}
             assert "authorized_command" not in r
             e = await w.handle(
                 {
@@ -112,4 +122,9 @@ async def main():
 
 
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--pause-seconds", type=float, default=0)
+    args = parser.parse_args()
+    if not 0 <= args.pause_seconds <= 120:
+        parser.error("pause must be between 0 and 120 seconds")
+    raise SystemExit(asyncio.run(main(args.pause_seconds)))

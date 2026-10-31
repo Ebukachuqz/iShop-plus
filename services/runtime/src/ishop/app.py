@@ -26,7 +26,9 @@ from ishop.speech import (
 )
 from ishop.tts import create_default_tts_registry
 from ishop.transport.websocket import create_voice_app
-from ishop.plus import PlusWorkflow, create_gemma_client
+from ishop.plus import (
+    PlusWorkflow, allowed_reasoning_profiles, create_gemma_client, split_reasoning_profile,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -47,7 +49,7 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
 
     def selected_llm_provider(grant: Any) -> LlmProvider | None:
         """Resolve only the profile authorized by the signed merchant grant."""
-        profile_id = str(getattr(grant, "llm_profile_id", ""))
+        profile_id, _ = split_reasoning_profile(getattr(grant, "llm_profile_id", ""))
         provider = llm_registry.get(profile_id)
         if provider is None:
             return None
@@ -64,9 +66,27 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
     session_store = SessionStore(active.state_db_path)
     command_journal = CommandJournal(active.state_db_path)
     command_journal.restart_reconcile()
-    plus_workflow = PlusWorkflow(create_gemma_client(google_api_key=active.gemini_api_key,
-                                                    nvidia_api_key=active.nvidia_api_key,
-                                                    openrouter_api_key=active.openrouter_api_key))
+
+    def make_plus_workflow(provider=None):
+        return PlusWorkflow(create_gemma_client(
+            google_api_key=active.gemini_api_key, nvidia_api_key=active.nvidia_api_key,
+            openrouter_api_key=active.openrouter_api_key, groq_api_key=active.groq_api_key,
+            provider=provider,
+        ))
+
+    plus_workflow = make_plus_workflow()
+    plus_workflows = {plus_workflow.model.provider: plus_workflow}
+
+    def selected_plus_workflow(grant):
+        _, provider = split_reasoning_profile(getattr(grant, "llm_profile_id", ""))
+        if provider is None:
+            return plus_workflow
+        if provider not in plus_workflows:
+            plus_workflows[provider] = make_plus_workflow(provider)
+        return plus_workflows[provider]
+
+    async def handle_plus(payload, grant, emit):
+        return await selected_plus_workflow(grant).handle(payload, grant, emit)
 
     async def handle_shopping_turn(payload: dict[str, Any], grant: Any) -> dict[str, Any]:
         llm_provider = selected_llm_provider(grant)
@@ -188,7 +208,7 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
         grant: Any,
     ) -> dict[str, Any]:
         fallback, facts, intent_operation = _verified_command_response(command, result, verified)
-        if plus_workflow.command_finished(command, result, verified, grant):
+        if selected_plus_workflow(grant).command_finished(command, result, verified, grant):
             return {"status": "completed" if verified else "error", "spoken_response": fallback,
                     "plus_mission": True}
         if not verified:
@@ -241,7 +261,7 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
         # readiness separately verifies that the selected provider still has
         # credentials, producing a truthful unavailable response if they were
         # revoked after the merchant grant was issued.
-        allowed_llm_profiles={profile.profile_id for profile in llm_registry.list_profiles()},
+        allowed_llm_profiles=allowed_reasoning_profiles(),
         allowed_tts_profiles={
             "elevenlabs-tts-female-stream",
             "elevenlabs-tts-female-ws",
@@ -251,7 +271,7 @@ def create_runtime_app(settings: RuntimeSettings | None = None) -> FastAPI:
         command_journal=command_journal,
         shopping_tts_handler=synthesize_shopping_text,
         shopping_command_result_handler=handle_command_result,
-        plus_handler=plus_workflow.handle,
+        plus_handler=handle_plus,
     )
 
     @app.get("/health")

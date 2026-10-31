@@ -128,4 +128,17 @@ describe("merchant configuration persistence", () => {
     await expect(getConfigurationSnapshot("shop-a.myshopify.com"))
       .rejects.toBeInstanceOf(InvalidConfigurationError);
   });
+  test("persists the independent multimodal choice in the revisioned signed profile", async () => {
+    database.merchantConfiguration.updateMany.mockResolvedValue({ count: 1 });
+    database.merchantConfiguration.findUniqueOrThrow.mockResolvedValue({ shop: "shop-a" });
+    await saveMerchantConfiguration({ shop: "shop-a.myshopify.com", expectedRevision: "revision-1",
+      selection: { asr: "elevenlabs-scribe-v2-realtime", llm: "groq-gpt-oss-120b|plus=groq", tts: "elevenlabs-tts-female-stream" } });
+    expect(database.merchantConfiguration.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ llmProfileId: "groq-gpt-oss-120b|plus=groq" }),
+    }));
+    expect(database.merchantConfigurationRevision.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ llmProfileId: "groq-gpt-oss-120b|plus=groq" }),
+    }));
+  });
+
 });
