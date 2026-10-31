@@ -102,7 +102,7 @@ At minimum, configure:
 - `DEV_ALLOWED_ORIGINS`
 - `SESSION_SIGNING_SECRET` with at least 32 random characters
 - `NVIDIA_API_KEY` and `ISHOP_PLUS_GEMMA_PROVIDER=nvidia` for hosted `google/gemma-4-31b-it`
-- Optional `OPENROUTER_API_KEY` and `ISHOP_PLUS_GEMMA_PROVIDER=openrouter` select `google/gemma-4-31b-it:free` exclusively. Free availability is rate-limited; image support is not yet live-verified for this account.
+- Optional `OPENROUTER_API_KEY` and `ISHOP_PLUS_GEMMA_PROVIDER=openrouter` select `google/gemma-4-31b-it:free` exclusively. Free availability is rate-limited; authenticated image tests currently fail with an upstream HTTP 429; successful image processing remains unverified.
 - Alternatively `ISHOP_PLUS_GEMMA_PROVIDER=google`, `GEMINI_API_KEY`, and `ISHOP_PLUS_GEMMA_MODEL` select the original Google route; its image requests failed in the tested account
 - `ISHOP_PLUS_VISION_ENABLED=true` and `ISHOP_PLUS_MISSIONS_ENABLED=true`
 - `ELEVENLABS_API_KEY`, `ISHOP_ENABLE_ELEVENLABS_REALTIME_STT=true`, and `ISHOP_ENABLE_ELEVENLABS_HTTP_TTS=true` for voice

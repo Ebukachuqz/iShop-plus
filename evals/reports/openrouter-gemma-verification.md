@@ -4,7 +4,7 @@
 
 OpenRouter is an explicitly selected alternative for Vision and Missions. It keeps Gemma 4 and uses only `google/gemma-4-31b-it:free`; no paid or cross-model fallback is configured. Local SQLite, voice, commerce, and deployment remain unchanged.
 
-Authenticated OpenRouter testing is pending the locally saved `OPENROUTER_API_KEY`. No external success is claimed. The free model listing currently identifies Google AI Studio as its provider, so it may reproduce the direct Google image failure.
+Authenticated OpenRouter testing has been executed using the locally saved key. The key metadata endpoint accepted authentication. No successful inference is claimed. The free model listing currently identifies Google AI Studio as its provider, so it may reproduce the direct Google image failure.
 
 The latest full NVIDIA workflow stopped during image analysis with HTTP 504 after 122.9 seconds. It did not reach catalogue matching. HTTP 202 polling cannot repair a provider HTTP 504. No cart writes occurred.
 
@@ -26,3 +26,13 @@ Offline wire tests are separate from authenticated provider tests.
 ## Executed offline checks
 
 Full Python suite: **343 passed**, with two dependency deprecation warnings. This includes nine new OpenRouter wire/error tests and fifteen NVIDIA adapter tests. Ruff passed for the touched provider and probe files. These tests mock provider responses and do not establish external image availability.
+
+## Authenticated provider run — 2026-11-01
+
+Selected `ISHOP_PLUS_GEMMA_PROVIDER=openrouter` in ignored local `.env`. Two complete Vision probe attempts failed during initial image analysis with HTTP 429 (1.3 and 1.2 seconds), before any catalogue results were consumed. A separate minimal text-only control failed with the same status. The error metadata named Google AI Studio and explicitly reported that `google/gemma-4-31b-it:free` was temporarily rate-limited upstream. There was no Retry-After header. The model endpoint listing contained Google AI Studio only.
+
+This establishes an upstream free-route rate limit for these attempts, rather than evidence of an invalid key or successful image processing. No cart writes occurred. No paid endpoint, different model, or key substitution was attempted. The latest metadata-only workflow result is in ignored `artifacts/runs/openrouter-full-vision-flow.json`.
+
+Next verification requires the free upstream route to recover, or explicit authorization to configure a paid Gemma route with a funded account. Neither is assumed. After successful inference, the unlocked Shopify development preview and runtime tunnel remain necessary for live store/cart verification. Restart the local runtime to load the newly selected provider.
+
+[Official limits documentation](https://openrouter.ai/docs/api-reference/limits) distinguishes free request caps from credit limits; the observed upstream error is not evidence that purchasing credits would repair this same free endpoint.
