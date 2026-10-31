@@ -331,12 +331,12 @@ def create_voice_app(
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.warning("TTS unavailable turn=%s revision=%s error_type=%s",
-                               payload["turn_id"], payload["request_revision"], type(exc).__name__)
                 provider_code = getattr(exc, "code", None)
                 failure_code = provider_code if isinstance(provider_code, str) else None
                 if not failure_code or not failure_code.replace("_", "").isalnum():
                     failure_code = "provider_error" if hasattr(exc, "provider_name") else "synthesis_error"
+                logger.warning("TTS unavailable turn=%s revision=%s error_type=%s code=%s",
+                               payload["turn_id"], payload["request_revision"], type(exc).__name__, failure_code[:64])
                 await websocket.send_json({"type": "tts_unavailable", "turn_id": payload["turn_id"],
                     "reply_id": reply_id, "reply_sequence": reply_sequence,
                     "request_revision": payload["request_revision"], "page_epoch": payload["page_epoch"],

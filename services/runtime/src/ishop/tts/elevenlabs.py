@@ -13,12 +13,63 @@ from typing import Any
 
 from ishop.tts.base import TtsAudioChunk, TtsCapabilities, TtsProvider, TtsProviderError, TtsSession
 
-DEFAULT_FEMALE_VOICE_ID = "EXAVITQu4vr4xnSDxMaL"  # Sarah; verified with account voice listing and synthesis.
+DEFAULT_FEMALE_VOICE_ID = (
+    "EXAVITQu4vr4xnSDxMaL"  # Sarah; verified with account voice listing and synthesis.
+)
 DEFAULT_MODEL_ID = "eleven_flash_v2_5"
 
 
+def _http_failure(error: urllib.error.HTTPError) -> TtsProviderError:
+    """Classify structured provider errors before falling back to HTTP status.
+
+    ElevenLabs can return quota_exceeded with HTTP 401, so the status alone
+    cannot distinguish an invalid key from an exhausted account.
+    """
+    try:
+        body = json.loads(error.read(8192))
+        detail = body.get("detail", {}) if isinstance(body, dict) else {}
+        detail = detail if isinstance(detail, dict) else {}
+    except (ValueError, OSError):
+        detail = {}
+    provider_code = str(detail.get("code") or detail.get("status") or "").lower()
+    error_type = str(detail.get("type") or "").lower()
+    if (
+        provider_code
+        in {"quota_exceeded", "insufficient_credits", "insufficient_funds", "payment_required"}
+        or error_type == "payment_required"
+        or error.code == 402
+    ):
+        return TtsProviderError(
+            "Voice service credits are exhausted", "elevenlabs", False, "tts_insufficient_credits"
+        )
+    if (
+        provider_code
+        in {"voice_not_found", "voice_not_allowed", "model_not_found", "model_not_allowed"}
+        or error.code == 404
+    ):
+        return TtsProviderError(
+            "Selected voice or model is unavailable", "elevenlabs", False, "tts_voice_unavailable"
+        )
+    if error.code in {401, 403}:
+        return TtsProviderError(
+            "Voice service authentication or permissions failed",
+            "elevenlabs",
+            False,
+            "tts_auth_failed",
+        )
+    if error.code == 429:
+        return TtsProviderError(
+            "Voice service rate limit reached", "elevenlabs", True, "tts_rate_limited"
+        )
+    return TtsProviderError(
+        "Voice service request failed", "elevenlabs", error.code >= 500, "tts_provider_unavailable"
+    )
+
+
 class ElevenLabsHttpTtsSession(TtsSession):
-    def __init__(self, response: Any, generation: int, reply_id: str | None = None, chunk_size: int = 4096):
+    def __init__(
+        self, response: Any, generation: int, reply_id: str | None = None, chunk_size: int = 4096
+    ):
         self._response = response
         self._generation = generation
         self._reply_id = reply_id
@@ -71,7 +122,9 @@ class ElevenLabsHttpTtsProvider(TtsProvider):
         self._voice_id = voice_id or os.getenv("ELEVENLABS_VOICE_ID") or DEFAULT_FEMALE_VOICE_ID
         self._model_id = model_id or os.getenv("ELEVENLABS_TTS_MODEL") or DEFAULT_MODEL_ID
         self._output_format = output_format
-        self._endpoint_url = endpoint_url or f"https://api.elevenlabs.io/v1/text-to-speech/{self._voice_id}/stream"
+        self._endpoint_url = (
+            endpoint_url or f"https://api.elevenlabs.io/v1/text-to-speech/{self._voice_id}/stream"
+        )
         self._opener = opener or urllib.request.urlopen
 
     @property
@@ -92,7 +145,9 @@ class ElevenLabsHttpTtsProvider(TtsProvider):
             disabled_reason=None if has_key else "ELEVENLABS_API_KEY not configured",
         )
 
-    async def synthesize(self, text: str, generation: int, reply_id: str | None = None) -> TtsSession:
+    async def synthesize(
+        self, text: str, generation: int, reply_id: str | None = None
+    ) -> TtsSession:
         if not self._api_key:
             raise TtsProviderError("ELEVENLABS_API_KEY not configured", "elevenlabs", False)
         if not text.strip():
@@ -110,10 +165,11 @@ class ElevenLabsHttpTtsProvider(TtsProvider):
             resp = await asyncio.to_thread(self._opener, req, timeout=10.0)
             return ElevenLabsHttpTtsSession(resp, generation, reply_id=reply_id)
         except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise TtsProviderError(f"ElevenLabs HTTP {exc.code}: {body}", "elevenlabs", exc.code in (429, 500, 502, 503)) from exc
+            raise _http_failure(exc) from exc
         except Exception as exc:
-            raise TtsProviderError(f"ElevenLabs request failed: {exc}", "elevenlabs", True) from exc
+            raise TtsProviderError(
+                "Voice service connection failed", "elevenlabs", True, "tts_connection_failed"
+            ) from exc
 
 
 class ElevenLabsWsTtsSession(TtsSession):
@@ -186,7 +242,10 @@ class ElevenLabsWsTtsProvider(TtsProvider):
         self._voice_id = voice_id or os.getenv("ELEVENLABS_VOICE_ID") or DEFAULT_FEMALE_VOICE_ID
         self._model_id = selected_model
         self._output_format = output_format
-        self._endpoint_url = endpoint_url or f"wss://api.elevenlabs.io/v1/text-to-speech/{self._voice_id}/stream-input"
+        self._endpoint_url = (
+            endpoint_url
+            or f"wss://api.elevenlabs.io/v1/text-to-speech/{self._voice_id}/stream-input"
+        )
         self._connector = connector
 
     @property
@@ -207,18 +266,26 @@ class ElevenLabsWsTtsProvider(TtsProvider):
             disabled_reason=None if has_key else "ELEVENLABS_API_KEY not configured",
         )
 
-    async def synthesize(self, text: str, generation: int, reply_id: str | None = None) -> TtsSession:
+    async def synthesize(
+        self, text: str, generation: int, reply_id: str | None = None
+    ) -> TtsSession:
         if not self._api_key:
             raise TtsProviderError("ELEVENLABS_API_KEY not configured", "elevenlabs", False)
         if self._model_id == "eleven_v3":
-            raise TtsProviderError("eleven_v3 model is not supported on stream-input socket", "elevenlabs", False)
+            raise TtsProviderError(
+                "eleven_v3 model is not supported on stream-input socket", "elevenlabs", False
+            )
 
         try:
             from websockets.asyncio.client import connect
         except ImportError as exc:
             raise TtsProviderError("websockets dependency required", "elevenlabs", False) from exc
 
-        connector = self._connector or (lambda url, headers: connect(url, additional_headers=headers, user_agent_header="iShop-Drake/0.1"))
+        connector = self._connector or (
+            lambda url, headers: connect(
+                url, additional_headers=headers, user_agent_header="iShop-Drake/0.1"
+            )
+        )
         url = f"{self._endpoint_url}?model_id={self._model_id}&output_format={self._output_format}"
         socket = await connector(url, {"xi-api-key": self._api_key})
 

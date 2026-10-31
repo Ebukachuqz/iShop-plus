@@ -609,11 +609,17 @@
         if (event.reply_id && this.playback?.beginReply && !this.playback.beginReply(event.reply_id, Number(event.reply_sequence) || 0)) return;
         this.playback?.fail?.(event.reply_id || null, Number(event.reply_sequence) || 0);
         console.warn('[Drake] Spoken reply unavailable:', event.failure_code || 'unknown');
-        this.audioStatus.textContent = event.failure_code === "session_initialization_error"
+        const voiceErrors = {
+          tts_insufficient_credits: "Voice credits exhausted. Your text reply is shown above.",
+          tts_auth_failed: "Spoken replies are unavailable because of a voice-service configuration issue. Your text reply is shown above.",
+          tts_voice_unavailable: "The configured voice or model is unavailable. Your text reply is shown above.",
+          tts_rate_limited: "The voice service is busy. Your text reply is shown above.",
+        };
+        this.audioStatus.textContent = voiceErrors[event.failure_code] || (event.failure_code === "session_initialization_error"
           ? "The selected Pidgin voice could not start. Your text reply is shown above."
           : event.retryable
           ? "The voice service is temporarily unavailable. Your text reply is shown above."
-          : "Spoken reply unavailable from the selected voice. Your text reply is shown above.";
+          : "Spoken reply unavailable from the selected voice. Your text reply is shown above.");
         this.playButton.hidden = true;
       } else if (event.type === "shopping_tts") {
         if (!this.client || Number(event.request_revision) !== Number(this.client.revision) || Number(event.page_epoch) !== Number(this.pageEpoch) || Number(event.request_revision) < Number(this.minimumAudioRevision || 0)) return;

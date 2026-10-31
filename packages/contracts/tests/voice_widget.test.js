@@ -1010,3 +1010,11 @@ test('submitted image preview is a message attachment, not just composer state',
   DrakeWidget.prototype.addMessage.call(widget,'shopper','bad attachment','javascript:alert(1)');
   assert.equal(entries[1].attachment,undefined);
 });
+
+test('TTS quota failures explain credits instead of implying an invalid voice', () => {
+  const {DrakeWidget}=loadWidgetState();
+  const widget={client:{revision:3},pageEpoch:1,audioStatus:{textContent:''},playButton:{hidden:false},playback:{fail(){}},minimumAudioRevision:0};
+  DrakeWidget.prototype.handleVoiceEvent.call(widget,{type:'tts_unavailable',request_revision:3,page_epoch:1,failure_code:'tts_insufficient_credits',retryable:false});
+  assert.match(widget.audioStatus.textContent,/Voice credits exhausted/);
+  assert.equal(widget.playButton.hidden,true);
+});

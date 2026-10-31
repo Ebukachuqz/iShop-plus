@@ -41,3 +41,11 @@ Restart FastAPI and refresh the Shopify development preview to load both sides o
 Shopify preview rejected the vendor license notice because `.txt` is not an accepted theme-extension asset format. The notice now ships verbatim inside `deep-chat-license.json`; `pnpm vendor:chat` regenerates that accepted format. The Liquid schema now references a small `drake-entry.js` loader, keeping the automatically loaded entry below the 10 KB theme-check threshold while loading the existing voice, chat, and bootstrap scripts in order.
 
 Executed verification: Shopify CLI theme check inspected three files with **no offenses**; all **116 JavaScript tests** and full-app ESLint passed; the **84-assertion Chrome journey** passed through the new entrypoint. Packaging tests reject unsupported asset suffixes, verify the schema entry size, and check the complete vendor notice against the pinned dependency. No live preview publishing or live cart mutation was performed by this check.
+
+## Live ElevenLabs synthesis diagnosis
+
+A direct request using the configured local credentials, Sarah voice, Flash v2.5 model, and PCM 16 kHz output was rejected with `quota_exceeded`. A separate read-only subscription check confirmed no remaining allowance. No successful audio generation is claimed. Restoring ElevenLabs account credits is required before audible live testing can pass; no billing or account changes were made.
+
+The HTTP adapter previously wrapped the structured error without a code, causing the generic `provider_error` message. It now prioritizes the provider error code over HTTP status (the observed quota rejection used HTTP 401), reports non-retryable `tts_insufficient_credits`, omits private response details, and separately categorizes authentication, unavailable voice/model, rate-limit, and connection failures. The widget says "Voice credits exhausted," and safe runtime logs include the actionable code.
+
+Verification: a second direct provider request produced the corrected safe quota code; **385 Python tests**, **117 JavaScript tests**, and full-app ESLint passed. The new provider-to-WebSocket regression confirms text replies remain usable after TTS quota rejection. Provider metadata was inspected locally; credentials and raw account payloads were not committed. Successful synthesis and audible playback remain blocked by the account allowance.
