@@ -405,6 +405,24 @@ def test_t03_variant_ambiguity_triggers_clarification_no_silent_substitution(sto
     assert "size" in res.spoken_response.lower()
 
 
+@pytest.mark.parametrize("operation", [IntentOperation.ADD_TO_CART, IntentOperation.UPDATE_QUANTITY])
+def test_add_to_cart_cannot_become_set_one_from_model_quantity_mode(store_evidence, operation):
+    provider = FakeLlmProvider()
+    provider.register_custom_intent("add the embroidered cap to my cart", ShoppingIntent(
+        intent_id="add_existing", operation=operation,
+        product_query="Embroidered Cap", quantity_change=QuantityChange(mode="set", value=1),
+        is_explicit_checkout_request=False, supporting_transcript_span="Add the embroidered cap to my cart",
+    ))
+    cart = CartSnapshot("drake-test.myshopify.com", "NGN", (CartLine("var_cap", 1),))
+    controller = ShoppingController(provider)
+    result = asyncio.run(controller.handle_turn("s", "add_existing", 1, 1,
+        "Add the embroidered cap to my cart", store_evidence, cart))
+    assert result.authorized_command is not None
+    # An existing line is updated to its computed total, not reset to the delta.
+    assert result.authorized_command.operation == CommandOperation.SET_LINE_QUANTITY
+    assert result.authorized_command.parameters["quantity"] == 2
+
+
 def test_t05_quantity_arithmetic_add_two_vs_make_it_two(store_evidence, empty_cart):
     """T-05: 'Add two' yields increment 2; 'make it two' yields set 2; 'remove' yields set 0."""
     fake_llm = FakeLlmProvider()

@@ -891,6 +891,13 @@ class ShoppingController:
                     unresolved_fields=tuple(field for field in intent.unresolved_fields if field != "product_query"),
                 )
 
+        # A clear additive request must not become an absolute quantity update.
+        # Leave negations, explicit set requests and compound edits to clarification.
+        if (intent.operation == IntentOperation.UPDATE_QUANTITY
+                and re.search(r"\badd\b.*\b(?:cart|basket)\b", lower_transcript)
+                and not re.search(r"(?:do not|don't|don’t|never)\s+add|\b(?:set|make|change|update|reduce|remove)\b", lower_transcript)):
+            intent = replace(intent, operation=IntentOperation.ADD_TO_CART)
+
         if intent.operation in {IntentOperation.SEARCH, IntentOperation.BROWSE}:
             reset_budget = any(phrase in lower_transcript for phrase in ("no budget", "remove the price limit", "any price", "reset price"))
             changes_subject = bool(starts_new_read and intent.product_query and sess.active_search_query
@@ -2027,7 +2034,8 @@ class ShoppingController:
                     )
 
             # 7. Map quantity operation (T-05)
-            if intent.quantity_change and intent.quantity_change.mode == "set":
+            if (intent.operation == IntentOperation.UPDATE_QUANTITY
+                    and intent.quantity_change and intent.quantity_change.mode == "set"):
                 q_op = QuantityOperation.SET
             else:
                 q_op = QuantityOperation.INCREMENT

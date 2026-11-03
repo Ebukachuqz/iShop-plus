@@ -7,12 +7,29 @@
       this.grant = options.grant;
       this.WebSocket = options.WebSocket || window.WebSocket;
       this.onEvent = options.onEvent || function () {};
+      this.renewGrant = options.renewGrant || null;
       this.socket = null;
       this.revision = 0;
       this.finalRevisions = new Set();
     }
 
     connect() {
+      if (this.renewGrant && Number(this.grant?.expires_at_ms) - Date.now() < 60000) {
+        if (!this.renewing) {
+          this.renewing = Promise.resolve().then(() => this.renewGrant()).then((grant) => {
+            if (!grant || Number(grant.expires_at_ms) - Date.now() < 60000 ||
+                grant.anonymous_session_id !== this.grant.anonymous_session_id ||
+                grant.shop_id !== this.grant.shop_id || grant.permitted_origin !== this.grant.permitted_origin) {
+              throw new Error("session_renewal_requires_refresh");
+            }
+            const oldSocket = this.socket;
+            this.socket = null;
+            this.grant = grant;
+            oldSocket?.close();
+          }).finally(() => { this.renewing = null; });
+        }
+        return this.renewing.then(() => this.connect());
+      }
       if (this.socket && this.socket.readyState === 1) return Promise.resolve();
       if (this.connecting) return this.connecting;
       this.connecting = new Promise((resolve, reject) => {

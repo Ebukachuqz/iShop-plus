@@ -53,6 +53,32 @@ test('stalled WebSocket connection rejects at its deadline and permits reconnect
   await second;
 });
 
+test('expired grant renews once before concurrent requests and preserves session identity', async () => {
+  const voice=loadVoice(); let renewalCalls=0; let socket; let closed=0; const sent=[];
+  const old={anonymous_session_id:'sess_same',shop_id:'shop.test',permitted_origin:'https://shop.test',expires_at_ms:Date.now()-1};
+  const fresh={...old,expires_at_ms:Date.now()+300000,grant_id:'new_grant'};
+  class Socket {constructor(){socket=this;} send(raw){sent.push(JSON.parse(raw));} close(){closed++;}}
+  const client=new voice.VoiceSessionClient({url:'wss://fixture',grant:old,WebSocket:Socket,
+    renewGrant:async()=>{renewalCalls++;return fresh;}});
+  client.socket={readyState:1,close(){closed++;}};
+  const first=client.connect(); const second=client.connect();
+  await new Promise(resolve=>setTimeout(resolve,0));
+  socket.onopen(); await Promise.all([first,second]);
+  assert.equal(renewalCalls,1); assert.equal(closed,1);
+  assert.equal(client.grant.anonymous_session_id,'sess_same');
+  assert.equal(sent[0].grant.grant_id,'new_grant');
+});
+
+test('renewal cannot silently move an approval into a different shopper session', async () => {
+  const voice=loadVoice(); let opened=0;
+  const grant={anonymous_session_id:'sess_old',shop_id:'shop.test',permitted_origin:'https://shop.test',expires_at_ms:Date.now()-1};
+  const client=new voice.VoiceSessionClient({url:'wss://fixture',grant,
+    WebSocket:class {constructor(){opened++;}},
+    renewGrant:async()=>({...grant,anonymous_session_id:'sess_new',expires_at_ms:Date.now()+300000})});
+  await assert.rejects(client.connect(),/requires_refresh/);
+  assert.equal(opened,0); assert.equal(client.grant,grant);
+});
+
 function loadWidgetState(customDoc, customWindow = {}, customLocation = null, customMutationObserver = undefined) {
   const window = customWindow;
   const mockStorage = {

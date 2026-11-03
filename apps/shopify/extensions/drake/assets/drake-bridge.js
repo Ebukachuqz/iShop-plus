@@ -66,15 +66,48 @@ export class StorefrontBridge {
     if (!drawer) return !this.document?.querySelector?.('[data-cart-drawer], #CartDrawer, .cart-drawer');
     if (!this.fetch || !this.DOMParser) return false;
     try {
-      const response = await this.fetch(`${this.ajax.baseUrl || ''}/cart?sections=cart-drawer`, {
-        headers: {Accept:'application/json'}, cache:'no-store', signal:AbortSignal.timeout(5000),
-      });
-      if (!response.ok) return false;
-      const sections = await response.json();
-      if (typeof sections['cart-drawer'] !== 'string') return false;
-      const parsed = new this.DOMParser().parseFromString(sections['cart-drawer'], 'text/html');
-      const fresh = parsed.querySelector('cart-drawer');
-      if (!fresh || fresh.querySelectorAll('.cart-item').length !== cart.lines.length) return false;
+      const cartUrl = new URL(`${this.ajax.baseUrl || ''}/cart`, this.origin);
+      const preview = this.document.defaultView?.location?.search;
+      if (preview) {
+        const theme = new URLSearchParams(preview).get('preview_theme_id');
+        if (theme) cartUrl.searchParams.set('preview_theme_id', theme);
+      }
+      const sectionUrl = new URL(cartUrl);
+      sectionUrl.searchParams.set('sections', 'cart-drawer');
+      const validDrawer = (html) => {
+        if (typeof html !== 'string' || html.length > 2 * 1024 * 1024) return null;
+        const fresh = new this.DOMParser().parseFromString(html, 'text/html').querySelector('cart-drawer');
+        if (!fresh || fresh.querySelectorAll('.cart-item').length !== cart.lines.length) return null;
+        const inputs = fresh.querySelectorAll('[data-quantity-variant-id]');
+        if (inputs.length) {
+          const actual = new Map();
+          const expected = new Map();
+          for (const input of inputs) {
+            const id = String(input.dataset.quantityVariantId);
+            actual.set(id, (actual.get(id) || 0) + Number(input.value));
+          }
+          for (const line of cart.lines) {
+            const id = String(line.variant_id);
+            expected.set(id, (expected.get(id) || 0) + Number(line.quantity));
+          }
+          if (actual.size !== expected.size || [...expected].some(([id, quantity]) => actual.get(id) !== quantity)) return null;
+        }
+        return fresh;
+      };
+      let fresh = null;
+      try {
+        const response = await this.fetch(`${sectionUrl.pathname}${sectionUrl.search}`, {
+          headers: {Accept:'application/json'}, credentials:'same-origin', cache:'no-store', signal:AbortSignal.timeout(5000),
+        });
+        if (response.ok) fresh = validDrawer((await response.json())['cart-drawer']);
+      } catch (_) { /* Try the same-theme HTML read; never repeat the cart write. */ }
+      if (!fresh) {
+        const response = await this.fetch(`${cartUrl.pathname}${cartUrl.search}`, {
+          headers: {Accept:'text/html'}, credentials:'same-origin', cache:'no-store', signal:AbortSignal.timeout(5000),
+        });
+        if (response.ok) fresh = validDrawer(await response.text());
+      }
+      if (!fresh) return false;
       const activeId = drawer.contains(this.document.activeElement) ? this.document.activeElement.id : null;
       // Preserve the custom-element host and its cart-icon listeners. The new
       // section replaces line items, prices, totals, and empty-cart markup.
@@ -269,7 +302,7 @@ export class StorefrontBridge {
       };
     }
 
-    syncCartIndicators(afterCart);
+    syncCartIndicators(afterCart, this.document);
     const drawerRefreshed = await this.refreshCartDrawer(afterCart);
 
     return {

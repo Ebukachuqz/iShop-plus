@@ -366,6 +366,15 @@ try {
   await evaluate("window.IShopDrake.handleVoiceEvent({type:'final_transcript', text:'Find three boards under 2500 USD'}); true");
   await waitFor(() => evaluate("Boolean(window.IShopDrake.missionProposal) && !window.IShopDrake.plusBusy"));
   await evaluate("window.__beforeApprovalReplies=window.IShopDrake.transcript.view.getMessages().filter(m=>m.role==='ai' && m.text).length; true");
+  await evaluate(`(() => {
+    const w=window.IShopDrake; window.__renewedSession=w.client.grant.anonymous_session_id;
+    w.client.grant={...w.client.grant,expires_at_ms:Date.now()-1};
+    window.__sectionFetch=w.bridge.fetch; window.__nullSections=0;
+    w.bridge.fetch=async(url,options)=>{
+      if(String(url).includes('sections=cart-drawer')) {window.__nullSections++; return {ok:true,json:async()=>({'cart-drawer':null})};}
+      return window.__sectionFetch(url,options);
+    };
+  })(); true`);
   await evaluate("window.IShopDrake.approveMissionButton.click(); true");
   await waitFor(() => evaluate("!window.IShopDrake.plusBusy && !window.IShopDrake.plusMissionExecuting && !window.IShopDrake.missionProposal"));
   cart = await evaluate("fetch('/cart.js').then(r=>r.json())");
@@ -373,6 +382,9 @@ try {
   check(cart.items.find(item => String(item.variant_id) === '101').quantity, 2, 'mission preserves preexisting quantity and adds approved delta');
   check(cart.items.find(item => String(item.variant_id) === '201').quantity, 1, 'mission second serial update verified');
   check(cart.items.find(item => String(item.variant_id) === '301').quantity, 1, 'mission third serial update verified');
+  check(await evaluate("window.IShopDrake.client.grant.anonymous_session_id===window.__renewedSession && window.IShopDrake.client.grant.expires_at_ms>Date.now()+60000"),true,'approval renews expired grant without losing shopper or proposal');
+  check(await evaluate("window.__nullSections"),3,'each mutation recovers from a null theme section using HTML read only');
+  await evaluate("window.IShopDrake.bridge.fetch=window.__sectionFetch; true");
   check(await evaluate("window.IShopDrake.transcript.view.getMessages().filter(m=>m.role==='ai' && m.text).length - window.__beforeApprovalReplies"),1,'one final assistant response covers the whole approved mission');
   check(await evaluate("document.querySelector('cart-drawer').querySelectorAll('.cart-item').length"),3,'closed cart drawer contents refresh without a page reload');
   check(await evaluate("document.querySelector('cart-drawer').hidden"),true,'cart refresh does not force the drawer open');
@@ -383,6 +395,16 @@ try {
   await evaluate("document.querySelector('cart-drawer').hidden=true; true");
 
   check(await evaluate("window.__foreignCartCalls"),0,'mission keeps all reads and writes on the browser cart despite other APIs being present');
+  await evaluate(`(async () => {
+    const w=window.IShopDrake;
+    const products=await Promise.all(['complete-snowboard','multi-location-snowboard'].map(handle=>w.catalog.getByHandle(handle)));
+    w.currentNativeSearch=null; w.renderProducts(products); w.plusResultsVisible=true;
+  })(); true`);
+  await submit('Add the second one to my cart', 'completed');
+  cart=await evaluate("fetch('/cart.js').then(r=>r.json())");
+  check(cart.items.find(item=>String(item.variant_id)==='201').quantity,2,'adding the second visible recommendation increments an already-present item');
+  check(cart.items.find(item=>String(item.variant_id)==='101').quantity,2,'adding the second recommendation preserves other quantities');
+  check(await evaluate("document.querySelector('cart-drawer').querySelectorAll('.cart-item').length"),3,'recommendation addition keeps the drawer populated');
   // Reproduce the shopper's exact post-mission price-only request through the real socket,
   // controller and native storefront search (provider and store remain isolated fixtures).
   const afterMissionCart = JSON.stringify(await evaluate("fetch('/cart.js').then(r=>r.json())"));

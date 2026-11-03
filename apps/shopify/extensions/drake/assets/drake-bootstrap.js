@@ -5,10 +5,12 @@
   const url = new URL(root.dataset.bootstrapUrl, window.location.origin);
   url.searchParams.set("origin", window.location.origin);
   const resumeKey = `ishop:resume:${root.dataset.shopDomain || window.location.host}`;
-  const savedResume = sessionStorage.getItem(resumeKey);
-  if (savedResume) url.searchParams.set("resume", savedResume);
-
-  fetch(url, { credentials: "same-origin", headers: { Accept: "application/json" } })
+  function fetchGrant() {
+    const requestUrl = new URL(url);
+    const savedResume = sessionStorage.getItem(resumeKey);
+    if (savedResume) requestUrl.searchParams.set("resume", savedResume);
+    return fetch(requestUrl, { credentials: "same-origin", cache: "no-store",
+      signal: AbortSignal.timeout(15000), headers: { Accept: "application/json" } })
     .then((response) => {
       if (!response.ok) {
         root.dataset.bootstrapState = "failed";
@@ -17,8 +19,13 @@
       }
       return response.json();
     })
-    .then(async ({ grant, resume_reference: resumeReference }) => {
+    .then(({ grant, resume_reference: resumeReference }) => {
       if (resumeReference) sessionStorage.setItem(resumeKey, resumeReference);
+      return grant;
+    });
+  }
+
+  fetchGrant().then(async (grant) => {
       const [bridgeModule, catalogModule] = await Promise.all([
         import(root.dataset.bridgeScriptUrl),
         import(root.dataset.catalogScriptUrl),
@@ -48,6 +55,7 @@
                 root.dataset.shopDomain,
               ),
               grant,
+              renewGrant: fetchGrant,
             }),
               bridge,
               catalog,

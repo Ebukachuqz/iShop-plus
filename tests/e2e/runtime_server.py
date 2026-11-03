@@ -204,13 +204,19 @@ async def checkout_page() -> HTMLResponse:
 
 @app.get("/cart")
 async def cart_page(request: Request):
+    from html import escape
+    cart = await get_cart()
+    rows = "".join(f'<div class="cart-item">{escape(item["product_title"])}: {item["quantity"]}</div>' for item in cart["items"])
+    total = sum(item["final_line_price"] for item in cart["items"])
+    drawer = f'<cart-drawer><div id="CartDrawer-Overlay"></div>{rows}<p data-drawer-total>{total}</p></cart-drawer>'
     if request.query_params.get("sections") == "cart-drawer":
-        from html import escape
-        cart = await get_cart()
-        rows = "".join(f'<div class="cart-item">{escape(item["product_title"])}: {item["quantity"]}</div>' for item in cart["items"])
-        total = sum(item["final_line_price"] for item in cart["items"])
-        return JSONResponse({"cart-drawer": f'<cart-drawer><div id="CartDrawer-Overlay"></div>{rows}<p data-drawer-total>{total}</p></cart-drawer>'})
-    return storefront_page()
+        return JSONResponse({"cart-drawer": drawer})
+    page = storefront_page()
+    html = page.body.decode().replace(
+        '<cart-drawer id="CartDrawer" hidden aria-hidden="true"><p class="drawer-empty">Your cart is empty</p></cart-drawer>',
+        drawer.replace('<cart-drawer>', '<cart-drawer id="CartDrawer" hidden aria-hidden="true">'),
+    )
+    return HTMLResponse(html)
 
 
 @app.get("/assets/{name}")

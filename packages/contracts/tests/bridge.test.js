@@ -11,7 +11,7 @@ test('theme section refresh preserves the drawer host and does not open it',asyn
   let requested=''; let empty=null; let opens=0;
   const drawer={innerHTML:'stale',contains:()=>false,querySelector:()=>null,
     classList:{toggle:(_name,value)=>{empty=value;},contains:()=>false},open:()=>{opens++;}};
-  const fresh={innerHTML:'fresh lines and subtotal',querySelectorAll:()=>[{},{}]};
+  const fresh={innerHTML:'fresh lines and subtotal',querySelectorAll:selector=>selector==='.cart-item'?[{},{}]:[]};
   class Parser{parseFromString(){return {querySelector:()=>fresh};}}
   const bridge=new StorefrontBridge({documentRef:{querySelector:()=>drawer,activeElement:null},
     ajaxAdapter:{baseUrl:'/en'},DOMParserRef:Parser,
@@ -19,6 +19,36 @@ test('theme section refresh preserves the drawer host and does not open it',asyn
   assert.equal(await bridge.refreshCartDrawer({lines:[{},{}]}),true);
   assert.equal(requested,'/en/cart?sections=cart-drawer');
   assert.equal(drawer.innerHTML,'fresh lines and subtotal'); assert.equal(empty,false); assert.equal(opens,0);
+});
+
+test('null preview section refreshes from same-theme HTML without replaying a write', async()=>{
+  const requests=[];
+  const drawer={innerHTML:'empty',contains:()=>false,querySelector:()=>null,
+    classList:{toggle(){},contains:()=>false}};
+  const fresh={innerHTML:'real cart lines',querySelectorAll:selector=>selector==='.cart-item'?[{}]:[]};
+  const bridge=new StorefrontBridge({origin:'https://shop.test',ajaxAdapter:{baseUrl:'/en'},
+    documentRef:{querySelector:()=>drawer,activeElement:null,defaultView:{location:{search:'?preview_theme_id=123'}}},
+    DOMParserRef:class{parseFromString(){return {querySelector:()=>fresh};}},
+    fetchRef:async(url,options)=>{requests.push({url,options});return requests.length===1
+      ? {ok:true,json:async()=>({'cart-drawer':null})}
+      : {ok:true,text:async()=>'<cart-drawer>actual cart</cart-drawer>'};}});
+  assert.equal(await bridge.refreshCartDrawer({lines:[{variant_id:'101',quantity:2}]}),true);
+  assert.equal(requests.length,2);
+  assert.match(requests[0].url,/preview_theme_id=123/);
+  assert.equal(requests[1].url,'/en/cart?preview_theme_id=123');
+  assert.equal(requests[1].options.credentials,'same-origin');
+  assert.equal(drawer.innerHTML,'real cart lines');
+});
+
+test('same line count with stale quantities cannot count as a refreshed drawer',async()=>{
+  let reads=0;
+  const drawer={innerHTML:'old',contains:()=>false,querySelector:()=>null,classList:{toggle(){},contains:()=>false}};
+  class Parser {parseFromString(html){return {querySelector:()=>({innerHTML:html,
+    querySelectorAll:selector=>selector==='.cart-item'?[{}]:[{dataset:{quantityVariantId:'101'},value:html==='stale'?'1':'2'}]})};}}
+  const bridge=new StorefrontBridge({origin:'https://shop.test',ajaxAdapter:{},documentRef:{querySelector:()=>drawer},DOMParserRef:Parser,
+    fetchRef:async()=>++reads===1?{ok:true,json:async()=>({'cart-drawer':'stale'})}:{ok:true,text:async()=> 'fresh'}});
+  assert.equal(await bridge.refreshCartDrawer({lines:[{variant_id:'101',quantity:2}]}),true);
+  assert.equal(reads,2);assert.equal(drawer.innerHTML,'fresh');
 });
 
 test('missing section HTML falls back to the cart page without opening stale content',async()=>{
