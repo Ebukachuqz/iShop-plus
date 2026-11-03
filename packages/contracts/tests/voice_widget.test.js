@@ -9,7 +9,7 @@ const here = fileURLToPath(new URL('.', import.meta.url));
 const source = readFileSync(join(here, '..', '..', '..', 'apps', 'shopify', 'extensions', 'drake', 'assets', 'drake-voice.js'), 'utf8');
 const widgetSource = readFileSync(join(here, '..', '..', '..', 'apps', 'shopify', 'extensions', 'drake', 'assets', 'drake-widget.js'), 'utf8');
 
-function loadVoice(AudioOverride = null) {
+function loadVoice(AudioOverride = null, timers = {}) {
   const window = {};
   class FakeAudio {
     constructor(src) {
@@ -30,10 +30,28 @@ function loadVoice(AudioOverride = null) {
     Blob,
     Audio: AudioOverride || FakeAudio,
     AudioBuffer: undefined,
-    setTimeout, clearTimeout,
+    setTimeout: timers.setTimeout || setTimeout, clearTimeout: timers.clearTimeout || clearTimeout,
   });
   return window.IShopVoiceSession;
 }
+
+test('stalled WebSocket connection rejects at its deadline and permits reconnect', async () => {
+  let expire;
+  const voice = loadVoice(null, { setTimeout(fn) { expire = fn; return 1; }, clearTimeout() {} });
+  let closed = 0;
+  class HangingSocket { close() { closed++; this.onclose(); } }
+  const client = new voice.VoiceSessionClient({ url: 'wss://fixture', grant: {}, WebSocket: HangingSocket });
+  const first = client.connect();
+  expire();
+  await assert.rejects(first, /voice_transport_timeout/);
+  await Promise.resolve();
+  assert.equal(closed, 1);
+  assert.equal(client.connecting, null);
+  const second = client.connect();
+  client.socket.send = () => {};
+  client.socket.onopen();
+  await second;
+});
 
 function loadWidgetState(customDoc, customWindow = {}, customLocation = null, customMutationObserver = undefined) {
   const window = customWindow;
@@ -748,6 +766,90 @@ function makePlusWidget() {
   };
   return { widget, requests, catalogResults, commandResults };
 }
+
+test('post-mission empty shopping result cannot silently return to ready', () => {
+  const { widget } = makePlusWidget();
+  widget.pendingTurn = { turnId: 'after_mission', requestRevision: 5, pageEpoch: widget.pageEpoch };
+  widget.client.revision = 5;
+  widget.setState('interpreting');
+  widget.handleVoiceEvent({ type: 'shopping_result', turn_id: 'after_mission', request_revision: 5,
+    page_epoch: widget.pageEpoch, status: 'completed', spoken_response: '' });
+  assert.equal(widget.state.name, 'failed');
+  assert.match(widget.messageHistory.at(-1).text, /reply|response/i);
+});
+
+test('post-mission price-only search resumes structured evidence request without legacy query field', () => {
+  const { widget } = makePlusWidget();
+  widget.client.revision = 5;
+  widget.pendingTurn = { turnId: 'price_search', requestRevision: 5, pageEpoch: widget.pageEpoch };
+  const calls = [];
+  widget.retrieveCatalogEvidence = (...args) => calls.push(args);
+  const request = { name: 'search_catalog', arguments: { query: 'snowboards', max_price: '50' } };
+  widget.setState('interpreting');
+  widget.handleVoiceEvent({ type: 'shopping_result', turn_id: 'price_search', request_revision: 5,
+    page_epoch: widget.pageEpoch, status: 'evidence_required', evidence_query: null,
+    spoken_response: '', tool_request: request });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'snowboards');
+  assert.equal(calls[0][4], request);
+  assert.equal(widget.state.name, 'interpreting');
+});
+
+test('request locks before connection and stale shopping results cannot reset it', async () => {
+  const { widget, requests } = makePlusWidget();
+  let connected;
+  widget.client.connect = () => new Promise(resolve => { connected = resolve; });
+  const sending = widget.sendPlusPayload({ feature: 'route', text: 'find something as expensive as $50' });
+  assert.equal(widget.plusBusy, true);
+  assert.equal(widget.state.name, 'interpreting');
+  connected(); await sending;
+  widget.pendingTurn = { turnId: 'new_turn', requestRevision: widget.client.revision, pageEpoch: widget.pageEpoch };
+  widget.handleVoiceEvent({ type: 'shopping_result', turn_id: 'old_turn', request_revision: widget.client.revision - 1,
+    status: 'completed', spoken_response: 'Old reply' });
+  assert.equal(widget.state.name, 'interpreting');
+  assert.equal(requests.length, 1);
+  widget.setState('ready');
+});
+
+test('missing response expires visibly without replaying a commerce command', async () => {
+  const { widget, requests, commandResults } = makePlusWidget();
+  widget.requestTimeoutMs = 10;
+  await widget.sendPlusPayload({ feature: 'route', text: 'find something as expensive as $50' });
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(widget.state.name, 'failed');
+  assert.equal(widget.plusBusy, false);
+  assert.equal(widget.plusRequestId, null);
+  assert.equal(requests.length, 1);
+  assert.equal(commandResults.length, 0);
+  assert.match(widget.messageHistory.at(-1).text, /check your cart/i);
+});
+
+test('empty plus completion is visible and a fresh request can recover', async () => {
+  const { widget, requests } = makePlusWidget();
+  await widget.sendPlusPayload({ feature: 'route', text: 'find something as expensive as $50' });
+  widget.handlePlusEvent({ type: 'plus_result', request_id: widget.plusRequestId, status: 'completed', message: '' });
+  assert.equal(widget.state.name, 'failed');
+  assert.equal(widget.plusBusy, false);
+  await widget.sendPlusPayload({ feature: 'route', text: 'find products under $50' });
+  widget.handlePlusEvent({ type: 'plus_result', request_id: widget.plusRequestId, status: 'completed', message: 'No products under $50.' });
+  assert.equal(widget.state.name, 'ready');
+  assert.equal(requests.length, 2);
+});
+
+test('late browser evidence after expiry cannot submit another shopping turn', async () => {
+  const { widget } = makePlusWidget();
+  let finishRead;
+  let submitted = 0;
+  widget.client.revision = 5;
+  widget.pendingTurn = { turnId: 'expired_read', requestRevision: 5, pageEpoch: widget.pageEpoch };
+  widget.catalog = { executeTool: () => new Promise(resolve => { finishRead = resolve; }) };
+  widget.submitShoppingRequest = () => { submitted++; };
+  const reading = widget.retrieveToolObservation({ name: 'get_product', arguments: { product_reference: 'p1' } }, 'expired_read', 5);
+  widget.pendingTurn = null;
+  finishRead({ data: { products: [] } });
+  await reading;
+  assert.equal(submitted, 0);
+});
 
 test('plus voice protocol preserves independent proposal revisions and uses authenticated socket', async () => {
   const voice = loadVoice();

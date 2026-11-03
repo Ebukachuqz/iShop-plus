@@ -428,6 +428,10 @@
       this.setState("ready");
     }
     setState(name, detail) {
+      if (["ready", "failed", "clarifying", "completed", "reconnecting"].includes(name)) {
+        clearTimeout(this.requestDeadline);
+        this.requestDeadline = null;
+      }
       const view = this.state.transition(name, detail);
       this.root.dataset.state = view.name;
       this.statusBeforeSpeaking = view.label;
@@ -441,6 +445,24 @@
       const busy = ["listening", "interpreting", "checking", "updating", "reconnecting"].includes(view.name);
       this.root.setAttribute("aria-busy", String(busy));
       return view;
+    }
+    watchRequest() {
+      clearTimeout(this.requestDeadline);
+      this.requestDeadline = setTimeout(() => {
+        // Do not retry writes: an acknowledgement may have been lost after Shopify applied one.
+        this.plusBusy = false;
+        this.plusRequestId = null;
+        this.minimumResultRevision = Number(this.client?.revision || 0) + 1;
+        this.interruptPlayback();
+        this.pendingTurn = null;
+        this.shoppingAttempt = null;
+        this.plusMissionExecuting = false;
+        this.stopMissionBasket();
+        const message = "Drake did not receive a complete response in time. Please check your cart before retrying any cart change.";
+        this.addMessage("assistant", message);
+        this.setState("failed", { error: message, suppressError: true });
+      }, this.requestTimeoutMs || 180000);
+      this.requestDeadline?.unref?.();
     }
     async startListening() {
       this.playback?.unlock?.();
@@ -563,6 +585,11 @@
         if (event.source === 'speech' || /^speech_|^provider_|^audio_|^session_not_started/.test(event.error_code || '')) this.stopCaptureLocally();
         this.setState("failed", { error: messages[event.error_code] || "I couldn’t process that. Please try again or type your request." });
       } else if (event.type === "shopping_result") {
+        if (Number(event.request_revision || 0) < Number(this.minimumResultRevision || 0)) return;
+        if (event.request_revision != null && Number(event.request_revision) < Number(this.client?.revision || 0)) return;
+        if (this.pendingTurn && ((event.turn_id && event.turn_id !== this.pendingTurn.turnId) ||
+            (event.request_revision != null && Number(event.request_revision) !== Number(this.pendingTurn.requestRevision)) ||
+            (event.page_epoch != null && Number(event.page_epoch) !== Number(this.pageEpoch)))) return;
         let resultProducts = null;
         if (event.status === "context_required") {
           this.submitShoppingRequest(this.pendingTranscript, null, this.pendingTurn);
@@ -570,6 +597,16 @@
         }
         if (event.status === "tool_required" && event.tool_request) {
           this.retrieveToolObservation(event.tool_request, event.turn_id, event.request_revision);
+          return;
+        }
+        if (event.status === "evidence_required" && event.tool_request) {
+          const tool = event.tool_request;
+          const query = event.evidence_query || tool.arguments?.query || tool.arguments?.product_reference;
+          if (query && ["search_catalog", "get_product"].includes(tool.name)) {
+            this.retrieveCatalogEvidence(query, event.turn_id, event.request_revision, tool.name, tool);
+          } else {
+            this.retrieveToolObservation(tool, event.turn_id, event.request_revision);
+          }
           return;
         }
         if (event.status === "evidence_required" && event.evidence_query) {
@@ -589,6 +626,13 @@
           if (matched.length) {
             resultProducts = matched;
           }
+        }
+        if (!event.spoken_response?.trim() && !event.authorized_command && !resultProducts?.length) {
+          const message = "I didn't receive a complete reply for that request. Please rephrase it; check your cart before repeating a cart change.";
+          this.addMessage("assistant", message);
+          this.pendingTurn = null;
+          this.setState("failed", { error: message, suppressError: true });
+          return;
         }
         if (event.spoken_response) this.addMessage("assistant", event.spoken_response);
         if (resultProducts) this.renderProducts(resultProducts);
@@ -628,6 +672,8 @@
         if (!this.client || Number(event.request_revision) !== Number(this.client.revision) || Number(event.page_epoch) !== Number(this.pageEpoch) || Number(event.request_revision) < Number(this.minimumAudioRevision || 0)) return;
         this.playTts(event.tts_audio_chunks, event);
       } else if (event.type === "command_result_ack") {
+        if (Number(event.request_revision || 0) < Number(this.minimumResultRevision || 0)) return;
+        if (event.request_revision != null && Number(event.request_revision) < Number(this.client?.revision || 0)) return;
         const receipt = this.pendingReceipts.get(event.command_id);
         // Late or duplicate acknowledgements must never regress a newer turn.
         if (!receipt) return;
@@ -811,14 +857,16 @@
 
     async sendPlusPayload(payload) {
       if (!this.client?.sendPlusRequest) throw new Error("plus_transport_unavailable");
-      await this.client.connect();
       const requestId = `plus_${crypto.randomUUID().replaceAll("-", "")}`;
       this.plusRequestId = requestId;
+      this.plusBusy = true;
+      this.setState("interpreting");
+      this.watchRequest();
       this.client.revision = Math.max(Number(this.client.revision || 0), this.lastRevision) + 1;
       this.lastRevision = this.client.revision;
       try { sessionStorage.setItem(this.revisionKey, String(this.lastRevision)); } catch (_) { /* Best-effort cleanup or optional browser capability. */ }
-      this.plusBusy = true;
-      this.setState("interpreting");
+      await this.client.connect();
+      if (this.plusRequestId !== requestId) return;
       this.client.sendPlusRequest({
         ...payload,
         conversation_context: this.messageHistory.filter(entry => entry.text).slice(-12).map(({role,text}) => ({role,text})),
@@ -910,12 +958,19 @@
       if (event.type === "plus_catalog_request") { this.retrievePlusCatalog(event); return; }
       if (event.type === "plus_route" && event.route === "shopping") {
         this.plusBusy = false;
-        if (this.plusResultsVisible) this.submitLegacyShoppingRequest(this.pendingRoutedText);
-        else this.submitShoppingRequest(this.pendingRoutedText);
+        const next = this.plusResultsVisible ? this.submitLegacyShoppingRequest(this.pendingRoutedText) : this.submitShoppingRequest(this.pendingRoutedText);
+        Promise.resolve(next).catch(() => this.setState("failed", { error: "Drake could not finish this request. Please try again." }));
         return;
       }
       if (event.type !== "plus_result") return;
       const message = event.message || event.spoken_response;
+      if (!message?.trim() && !event.authorized_command && !event.proposal && !event.products?.length && event.status !== 'executing') {
+        this.plusBusy = false;
+        const error = "I didn't receive a complete reply for that request. Please try rephrasing it.";
+        this.addMessage("assistant", error);
+        this.setState("failed", { error, suppressError: true });
+        return;
+      }
       if (message && event.status !== 'executing') this.addMessage("assistant", message);
       if (event.status !== 'executing') this.playTts(event.tts_audio_chunks);
       this.plusBusy = event.status === "executing";
@@ -1195,6 +1250,7 @@
           const catalogResult = await this.catalog.search(query, 8);
           products = catalogResult.products || [];
         }
+        if (!this.pendingTurn || this.pendingTurn.turnId !== turnId || this.pendingTurn.requestRevision !== requestRevision) return;
         this.pendingCatalogProducts = products;
         this.pendingCatalogQuery = query;
         const observation = {
@@ -1378,6 +1434,7 @@
           currentProductId: this.currentProductId,
           candidateProducts: this.candidates.products,
         });
+        if (!this.pendingTurn || this.pendingTurn.turnId !== turnId || this.pendingTurn.requestRevision !== requestRevision) return;
         const products = Array.isArray(observation?.data?.products) ? observation.data.products : [];
         this.pendingCatalogProducts = products.length ? products : this.pendingCatalogProducts;
         this.pendingCatalogQuery = request.arguments?.query || request.arguments?.product_reference || request.arguments?.collection_reference || request.name;
@@ -1401,8 +1458,11 @@
         return;
       }
       try {
+        const attempt = Symbol("shopping_request");
+        this.shoppingAttempt = attempt;
         this.pendingTranscript = normalizedText;
         this.setState("checking");
+        this.watchRequest();
         await this.client.connect();
         const includeStoreContext = Boolean(existingTurn || catalogEvidence || toolObservation);
         let currentCart = null;
@@ -1448,6 +1508,7 @@
           this.candidates.products.forEach(addProduct);
         }
 
+        if (this.shoppingAttempt !== attempt) return;
         const turn = existingTurn || {
           turnId: `turn_${crypto.randomUUID().replaceAll("-", "")}`,
           requestRevision: Math.max(1, this.client.revision + 1),
@@ -1504,6 +1565,7 @@
           payload.available_tools = availableTools;
           if (toolObservation) payload.tool_observation = toolObservation;
         }
+        if (this.shoppingAttempt !== attempt) return;
         this.client.sendShoppingTurn(payload);
         this.setState("interpreting");
       } catch (error) {

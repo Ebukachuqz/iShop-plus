@@ -13,6 +13,7 @@ from ishop.plus import (
     PlusError,
     PlusWorkflow,
     VisionSpec,
+    WorkflowRoute,
     amount,
     candidates,
     validate_image,
@@ -84,6 +85,28 @@ class Model:
 
 async def emit(stage, label):
     return None
+
+
+def test_completed_mission_cannot_capture_new_price_search_as_refinement():
+    class RefineModel(Model):
+        async def generate(self, prompt, schema, image=None):
+            assert schema is WorkflowRoute
+            assert '"prior_status": "completed"' in prompt
+            return WorkflowRoute(route="refine")
+
+    async def run():
+        workflow = PlusWorkflow(RefineModel(), lambda: NOW)
+        workflow.sessions[(SHOP, "session_plus")] = {
+            "feature": "mission", "status": "completed", "created_at": NOW,
+            "spec": {"budget": "2000.00"},
+        }
+        for text in ("find something as expensive as $50", "find something as expensive as $50"):
+            result = await workflow.handle(request("route", text=text), grant(), emit)
+            assert result["type"] == "plus_route"
+            assert result["route"] == "shopping"
+        assert workflow.sessions[(SHOP, "session_plus")]["status"] == "completed"
+
+    asyncio.run(run())
 
 
 def request(feature, **extra):

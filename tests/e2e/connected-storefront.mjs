@@ -383,6 +383,23 @@ try {
   await evaluate("document.querySelector('cart-drawer').hidden=true; true");
 
   check(await evaluate("window.__foreignCartCalls"),0,'mission keeps all reads and writes on the browser cart despite other APIs being present');
+  // Reproduce the shopper's exact post-mission price-only request through the real socket,
+  // controller and native storefront search (provider and store remain isolated fixtures).
+  const afterMissionCart = JSON.stringify(await evaluate("fetch('/cart.js').then(r=>r.json())"));
+  await submit('find something as expensive as $50');
+  check(await evaluate("window.IShopDrake.messageHistory.at(-1).role"),'assistant','post-mission structured search produces a visible reply');
+  // Separately inject a genuinely empty terminal event to check recovery after an invalid result.
+  await evaluate(`(() => {
+    const w=window.IShopDrake; w.pendingTurn={turnId:'empty_reply',requestRevision:w.client.revision,pageEpoch:w.pageEpoch};
+    w.setState('interpreting'); w.handleVoiceEvent({type:'shopping_result',turn_id:'empty_reply',
+      request_revision:w.client.revision,page_epoch:w.pageEpoch,status:'completed',spoken_response:''});
+  })(); true`);
+  check(await evaluate("window.IShopDrake.state.name"),'failed','empty completion cannot silently return to ready');
+  check(await evaluate("window.IShopDrake.messageHistory.at(-1).role"),'assistant','missing post-mission response produces a visible reply');
+  check(await evaluate("/complete reply/.test(window.IShopDrake.messageHistory.at(-1).text)"),true,'silent completion has explicit recovery guidance');
+  await submit('find something as expensive as $50');
+  check(await evaluate("window.IShopDrake.messageHistory.at(-1).role"),'assistant','same post-mission price request receives a normal reply on recovery');
+  check(JSON.stringify(await evaluate("fetch('/cart.js').then(r=>r.json())")),afterMissionCart,'price requests and recovery preserve the approved cart');
   const cartBeforeRejection=JSON.stringify(cart);
   await submit('Build a three-board basket under 2500 USD');
   await waitFor(()=>evaluate("Boolean(window.IShopDrake.missionProposal) && !window.IShopDrake.plusBusy"));

@@ -91,7 +91,9 @@ class MultimodalLlmProvider(LlmProvider):
         state = self.context_provider() or {}
         session_context = json.dumps(
             {
-                "requirements": state.get("spec"),
+                "requirements": state.get("spec")
+                if state.get("feature") != "mission" or state.get("status") == "approval"
+                else None,
                 "displayed_products": state.get("displayed_products", []),
                 "pending_basket": state.get("proposal")
                 if state.get("status") == "approval"

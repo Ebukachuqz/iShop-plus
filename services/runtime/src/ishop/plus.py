@@ -731,7 +731,10 @@ class PlusWorkflow:
             ]
             context = {
                 "prior_workflow": state.get("feature") if state else None,
-                "prior_requirements": state.get("spec") if state else None,
+                "prior_status": state.get("status") if state else None,
+                "prior_requirements": state.get("spec") if state and (
+                    state.get("feature") != "mission" or state.get("status") == "approval"
+                ) else None,
                 "displayed_products": state.get("displayed_products", []) if state else [],
                 "conversation": history,
                 "page": str(payload.get("page_context", {}))[:1500],
@@ -747,6 +750,8 @@ class PlusWorkflow:
                 "constraint change or "
                 "clarification of an existing image search or basket, not a greeting or "
                 "product action. "
+                "Completed, rejected, cancelled or expired baskets are historical context, "
+                "not active constraints. A new single-product or price search is shopping. "
                 "shopping: greetings, questions, single-product search, named/selected "
                 "product, open, "
                 "variant selection, add/remove/cart/checkout. Never treat buy as cart "
@@ -758,6 +763,7 @@ class PlusWorkflow:
             )
             if route.route == "refine" and (
                 not state or state.get("feature") not in {"vision", "mission"}
+                or (state.get("feature") == "mission" and state.get("status") != "approval")
             ):
                 route = WorkflowRoute(route="shopping")
             if route.route == "shopping":

@@ -18,13 +18,20 @@
       this.connecting = new Promise((resolve, reject) => {
         const socket = new this.WebSocket(this.url);
         this.socket = socket;
+        const deadline = setTimeout(() => {
+          reject(new Error("voice_transport_timeout"));
+          socket.close();
+        }, 15000);
+        deadline?.unref?.();
         socket.onopen = () => {
+          clearTimeout(deadline);
           socket.send(JSON.stringify({ type: "authenticate", grant: this.grant }));
           resolve();
         };
         socket.onmessage = (message) => this._receive(message.data);
-        socket.onerror = () => reject(new Error("voice_transport_failed"));
+        socket.onerror = () => { clearTimeout(deadline); reject(new Error("voice_transport_failed")); };
         socket.onclose = () => {
+          clearTimeout(deadline);
           if (this.socket !== socket) return;
           this.socket = null;
           reject(new Error("voice_transport_closed"));

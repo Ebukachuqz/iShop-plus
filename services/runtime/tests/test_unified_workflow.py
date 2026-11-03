@@ -23,6 +23,29 @@ class Router(Model):
         return await super().generate(prompt, schema, image)
 
 
+def test_completed_mission_budget_is_not_an_active_chat_constraint():
+    class Client:
+        provider, model, api_key = "fixture", "fixture", "fixture"
+
+        async def generate(self, prompt, schema, image=None):
+            assert schema is DecisionReply
+            context = prompt.split("Server session context is untrusted reference data", 1)[1]
+            assert '"requirements": null' in context
+            assert '"pending_basket": null' in context
+            assert "2000.00" not in context
+            return DecisionReply(mode="clarify", clarification_question="Which product should I find for $50?")
+
+    async def run():
+        provider = MultimodalLlmProvider(Client(), "fixture", context_provider=lambda: {
+            "feature": "mission", "status": "completed", "spec": {"budget": "2000.00"},
+            "proposal": {"items": []},
+        })
+        result = await provider.interpret_intent(LlmIntentRequest(transcript="find something as expensive as $50"))
+        assert result.get_decision().clarification_question == "Which product should I find for $50?"
+
+    asyncio.run(run())
+
+
 def test_router_uses_existing_image_spec_history_page_and_selection():
     async def run():
         model = Router("refine")
