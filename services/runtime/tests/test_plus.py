@@ -187,6 +187,78 @@ def test_gemma_provider_errors_are_not_retried_as_invalid_json():
     assert client.calls == 1
 
 
+def test_google_image_precedes_schema_text_and_repairs_keep_image_intact():
+    from ishop.plus import GemmaClient
+
+    class Repair(GemmaClient):
+        def __init__(self):
+            super().__init__(api_key="offline-test-key")
+            self.calls = 0
+
+        def _post(self, payload):
+            self.calls += 1
+            parts = payload["contents"][0]["parts"]
+            assert "inlineData" in parts[0] and "text" in parts[1]
+            assert parts[0]["inlineData"] == image
+            if self.calls == 2:
+                assert "previous output was invalid" in parts[1]["text"]
+            text = 'not-json' if self.calls == 1 else '{"query":"shirt","currency":"USD"}'
+            return {"candidates": [{"content": {"parts": [{"text": text}]}}]}
+
+    image = validate_image(image_payload())
+    client = Repair()
+    assert asyncio.run(client.generate("Find this", VisionSpec, image)).query == "shirt"
+    assert client.calls == 2
+
+
+def test_google_transient_retry_shares_deadline_and_does_not_change_payload(monkeypatch):
+    import urllib.error
+    from ishop.plus import GemmaClient
+
+    calls = []
+    sleeps = []
+    def post(request, timeout):
+        calls.append((request.data, timeout))
+        if len(calls) == 1:
+            raise urllib.error.HTTPError(request.full_url, 500, "Internal", {}, io.BytesIO(b"private error"))
+        return io.BytesIO(b'{"candidates": [{"content": {"parts": [{"text": "{\\"query\\":\\"shirt\\",\\"currency\\":\\"USD\\"}"}]}}]}')
+
+    monkeypatch.setattr("ishop.plus.urllib.request.urlopen", post)
+    monkeypatch.setattr("ishop.plus.time.sleep", sleeps.append)
+    client = GemmaClient(api_key="offline-test-key")
+    assert asyncio.run(client.generate("Find this", VisionSpec)).query == "shirt"
+    assert len(calls) == 2 and calls[0][0] == calls[1][0]
+    assert 0 < calls[1][1] <= calls[0][1] <= 60
+    assert sleeps == [1]
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 429])
+def test_google_does_not_retry_invalid_auth_or_quota_errors(monkeypatch, status):
+    import urllib.error
+    from ishop.plus import GemmaClient
+
+    calls = []
+    def post(request, timeout):
+        calls.append(request)
+        raise urllib.error.HTTPError(request.full_url, status, "Error", {}, io.BytesIO(b"private"))
+
+    monkeypatch.setattr("ishop.plus.urllib.request.urlopen", post)
+    with pytest.raises(PlusError, match=f"HTTP {status}"):
+        asyncio.run(GemmaClient(api_key="offline-test-key").generate("Find this", VisionSpec))
+    assert len(calls) == 1
+
+
+def test_google_socket_timeout_is_reported_as_timeout(monkeypatch):
+    from ishop.plus import GemmaClient
+
+    def post(request, timeout):
+        raise TimeoutError("private socket details")
+
+    monkeypatch.setattr("ishop.plus.urllib.request.urlopen", post)
+    with pytest.raises(PlusError, match="took too long"):
+        asyncio.run(GemmaClient(api_key="offline-test-key").generate("Find this", VisionSpec))
+
+
 def test_prices_options_stock_currency_are_deterministic():
     assert candidates([product()], "USD", {"Color": "Black"}, 2)
     assert not candidates([product(stock=1)], "USD", {}, 2)

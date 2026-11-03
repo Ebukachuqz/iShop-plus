@@ -170,7 +170,7 @@ class GemmaClient:
 
     provider = "google"
     credential_name = "GEMINI_API_KEY"
-    request_timeout = 30
+    request_timeout = 60
 
     def __init__(self, api_key: str | None = None, model: str | None = None):
         self.api_key = api_key or os.getenv("GEMINI_API_KEY", "")
@@ -185,41 +185,61 @@ class GemmaClient:
             headers={"Content-Type": "application/json", "x-goog-api-key": self.api_key},
             method="POST",
         )
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                return json.loads(response.read(1024 * 1024))
-        except urllib.error.HTTPError as exc:
-            logger.warning("Gemma request failed model=%s http=%s", self.model, exc.code)
-            if exc.code == 400 and any(
-                "inlineData" in part
-                for content in payload.get("contents", [])
-                for part in content.get("parts", [])
-            ):
+        # Inference is read-only. Retry one transient server failure within one
+        # shared deadline; never retry authorization, invalid input, or quota errors.
+        deadline = time.monotonic() + self.request_timeout
+        for attempt in range(2):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise PlusError("Gemma took too long. Please try again.")
+            try:
+                with urllib.request.urlopen(request, timeout=remaining) as response:
+                    return json.loads(response.read(1024 * 1024))
+            except urllib.error.HTTPError as exc:
+                status = exc.code
+                exc.close()
+                logger.warning("Gemma request failed model=%s http=%s", self.model, status)
+                if attempt == 0 and status in {500, 502, 503, 504} and deadline - time.monotonic() > 1:
+                    time.sleep(1)
+                    continue
+                if status == 400 and any(
+                    "inlineData" in part
+                    for content in payload.get("contents", [])
+                    for part in content.get("parts", [])
+                ):
+                    raise PlusError(
+                        "Gemma couldn't process this photo right now. "
+                        "Switch to shopping chat to describe the product in text. "
+                        "No cart changes were made by this image request."
+                    ) from None
                 raise PlusError(
-                    "Gemma couldn't process this photo right now. "
-                    "Switch to shopping chat to describe the product in text. "
-                    "No cart changes were made by this image request."
+                    f"Gemma is unavailable (HTTP {status}). Please try again shortly."
                 ) from None
-            raise PlusError(
-                f"Gemma is unavailable (HTTP {exc.code}). Please try again shortly."
-            ) from None
-        except (OSError, ValueError) as exc:
-            raise PlusError("I could not reach Gemma. Please try again shortly.") from exc
+            except TimeoutError:
+                raise PlusError("Gemma took too long. Please try again.") from None
+            except (OSError, ValueError) as exc:
+                if isinstance(getattr(exc, "reason", None), TimeoutError):
+                    raise PlusError("Gemma took too long. Please try again.") from None
+                raise PlusError("I could not reach Gemma. Please try again shortly.") from exc
+        raise PlusError("Gemma is unavailable. Please try again shortly.")
 
     async def generate(self, prompt: str, schema: type[BaseModel], image=None) -> BaseModel:
         if not self.api_key or self.api_key.startswith("your_"):
             raise PlusError(
                 f"Vision and Missions need a configured {self.credential_name} on the runtime."
             )
-        parts: list[dict[str, Any]] = [
-            {
-                "text": prompt
-                + "\nReturn ONLY a JSON object matching this schema: "
-                + json.dumps(schema.model_json_schema())
-            }
-        ]
+        text_part = {
+            "text": prompt
+            + "\nReturn ONLY a JSON object matching this schema: "
+            + json.dumps(schema.model_json_schema())
+        }
+        parts: list[dict[str, Any]] = [text_part]
         if image:
-            parts.append({"inlineData": image})
+            if self.provider == "google":
+                parts.insert(0, {"inlineData": image})
+            else:
+                # Other adapters retain their tested provider-specific wire format.
+                parts.append({"inlineData": image})
         for attempt in range(2):
             payload = {
                 "contents": [{"role": "user", "parts": parts}],
@@ -264,8 +284,8 @@ class GemmaClient:
                     feedback = json.dumps(
                         exc.errors(include_input=False, include_context=False, include_url=False)
                     )[:1000]
-                    parts[0]["text"] += "\nValidation errors to fix: " + feedback
-                parts[0]["text"] += (
+                    text_part["text"] += "\nValidation errors to fix: " + feedback
+                text_part["text"] += (
                     "\nYour previous output was invalid. Return the exact schema, no commentary."
                 )
             except TimeoutError:
