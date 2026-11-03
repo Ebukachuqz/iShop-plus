@@ -99,9 +99,9 @@ class FixturePlusModel:
             return VisionSpec(query="snowboard", currency="USD", required_options={} if "all colors" in prompt.lower() else {"Color": "Ice"})
         if schema is MissionSpec:
             return MissionSpec(goal="Three board test basket", budget="2500", currency="USD", tasks=[
-                {"category": "Complete", "query": "complete snowboard", "required_options": {"Color": "Ice"}},
-                {"category": "Multi-location", "query": "multi-location snowboard"},
-                {"category": "Multi-managed", "query": "multi-managed snowboard"}])
+                {"category": "Snowboard", "query": "complete snowboard", "required_options": {"Color": "Ice"}},
+                {"category": "Snowboard", "query": "multi-location snowboard"},
+                {"category": "Snowboard", "query": "multi-managed snowboard"}])
         if schema is AgentChoice:
             if prompt.startswith("Rank approximate"):
                 return AgentChoice(variant_ids=["101", "102"])

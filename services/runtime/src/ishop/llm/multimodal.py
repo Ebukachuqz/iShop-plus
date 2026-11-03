@@ -92,7 +92,7 @@ class MultimodalLlmProvider(LlmProvider):
         session_context = json.dumps(
             {
                 "requirements": state.get("spec")
-                if state.get("feature") != "mission" or state.get("status") == "approval"
+                if state.get("feature") != "mission" or state.get("status") in {"approval", "draft"}
                 else None,
                 "displayed_products": state.get("displayed_products", []),
                 "pending_basket": state.get("proposal")

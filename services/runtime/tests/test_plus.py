@@ -87,6 +87,44 @@ async def emit(stage, label):
     return None
 
 
+def test_named_items_in_same_category_are_independent_mission_tasks():
+    class SameCategory(Model):
+        async def generate(self, prompt, schema, image=None):
+            assert schema is MissionSpec  # Explicit basket request skips the routing call.
+            return MissionSpec(goal="Two snowboards", budget="2000", currency="USD", tasks=[
+                {"category": "Snowboard", "query": "Complete Snowboard", "required_options": {"Color": "Ice"}},
+                {"category": "Snowboard", "query": "Multi-location Snowboard"},
+            ])
+
+    async def run():
+        workflow = PlusWorkflow(SameCategory(), lambda: NOW)
+        result = await workflow.handle(request("route", text="Find one Complete Snowboard in Ice and one Multi-location Snowboard. Prepare a basket for review, but do not add anything yet."), grant(), emit)
+        assert result["type"] == "plus_catalog_request"
+        assert [item["query"] for item in result["queries"]] == ["Complete Snowboard", "Multi-location Snowboard"]
+        assert "authorized_command" not in result
+
+    asyncio.run(run())
+
+
+def test_repeated_provider_429_does_not_repeat_inference_during_cooldown():
+    from ishop.plus import GemmaClient
+
+    class Limited(GemmaClient):
+        calls = 0
+        def _post(self, payload):
+            self.calls += 1
+            raise PlusError("Model unavailable (HTTP 429)")
+
+    async def run():
+        client = Limited(api_key="fixture")
+        for _ in range(2):
+            with pytest.raises(PlusError, match="HTTP 429"):
+                await client.generate("Find a snowboard", VisionSpec)
+        assert client.calls == 1
+
+    asyncio.run(run())
+
+
 def test_completed_mission_cannot_capture_new_price_search_as_refinement():
     class RefineModel(Model):
         async def generate(self, prompt, schema, image=None):

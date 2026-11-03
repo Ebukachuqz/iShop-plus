@@ -984,7 +984,10 @@ class ShoppingController:
         # Do not silently discard a second requested action when the provider
         # returns only the first operation. A bounded plan contract can be
         # introduced later; until then, ask before executing either side.
-        if intent.operation in (IntentOperation.SEARCH, IntentOperation.BROWSE) and "add" in lower_transcript and ("search" in lower_transcript or "find" in lower_transcript):
+        additive_text = re.sub(r"\b(?:do not|don't|don’t|never)\s+add\b", "", lower_transcript)
+        if (intent.operation in (IntentOperation.SEARCH, IntentOperation.BROWSE)
+                and re.search(r"\badd\b", additive_text)
+                and re.search(r"\b(?:search|find)\b", lower_transcript)):
             return ControllerTurnResult(
                 session_id=session_id,
                 turn_id=turn_id,

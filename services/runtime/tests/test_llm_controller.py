@@ -423,6 +423,19 @@ def test_add_to_cart_cannot_become_set_one_from_model_quantity_mode(store_eviden
     assert result.authorized_command.parameters["quantity"] == 2
 
 
+def test_negated_add_does_not_trigger_compound_search_and_add_guard(store_evidence, empty_cart):
+    provider = FakeLlmProvider()
+    text = "Find embroidered caps, but do not add anything yet"
+    provider.register_custom_intent(text.lower(), ShoppingIntent(
+        intent_id="read_only", operation=IntentOperation.SEARCH, product_query="Embroidered Cap",
+        is_explicit_checkout_request=False, supporting_transcript_span=text,
+    ))
+    result = asyncio.run(ShoppingController(provider).handle_turn("s", "read_only", 1, 1,
+        text, store_evidence, empty_cart))
+    assert "search first, then add" not in result.spoken_response
+    assert result.authorized_command is None
+
+
 def test_t05_quantity_arithmetic_add_two_vs_make_it_two(store_evidence, empty_cart):
     """T-05: 'Add two' yields increment 2; 'make it two' yields set 2; 'remove' yields set 0."""
     fake_llm = FakeLlmProvider()
