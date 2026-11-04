@@ -67,6 +67,26 @@ class DelayedLlmProvider(LlmProvider):
         return "Added hoodie."
 
 
+class ControlledLlmProvider(DelayedLlmProvider):
+    """Hold reasoning until the test explicitly establishes a concurrent event."""
+
+    def __init__(self):
+        super().__init__(delay_s=0)
+        self.started: dict[str, asyncio.Event] = {}
+        self.released: dict[str, asyncio.Event] = {}
+
+    async def interpret_intent(self, request: LlmIntentRequest) -> LlmInterpretationResult:
+        self.started.setdefault(request.turn_id, asyncio.Event()).set()
+        await self.released.setdefault(request.turn_id, asyncio.Event()).wait()
+        return await super().interpret_intent(request)
+
+    async def wait_started(self, turn_id: str) -> None:
+        await asyncio.wait_for(self.started.setdefault(turn_id, asyncio.Event()).wait(), 5)
+
+    def release(self, turn_id: str) -> None:
+        self.released.setdefault(turn_id, asyncio.Event()).set()
+
+
 @pytest.fixture
 def sample_evidence() -> EvidenceSnapshot:
     variant = VariantEvidence(
@@ -98,10 +118,13 @@ def empty_cart() -> CartSnapshot:
     return CartSnapshot(shop_id="drake-test.myshopify.com", currency="NGN")
 
 
-def test_r02_overlapping_newer_turn_aborts_pending_turn(sample_evidence, empty_cart):
+@pytest.mark.parametrize("older_finishes_first", [True, False])
+def test_r02_overlapping_newer_turn_aborts_pending_turn(
+    sample_evidence, empty_cart, older_finishes_first
+):
     """R2 (P0): When turn 2 arrives while turn 1 is awaiting LLM, turn 1 must not authorize actions."""
     async def _test():
-        provider = DelayedLlmProvider(delay_s=0.06)
+        provider = ControlledLlmProvider()
         controller = ShoppingController(llm_provider=provider)
 
         # Start turn 1 in background
@@ -117,8 +140,8 @@ def test_r02_overlapping_newer_turn_aborts_pending_turn(sample_evidence, empty_c
             )
         )
 
-        # Wait 0.02s, then start turn 2 (superseding turn 1)
-        await asyncio.sleep(0.02)
+        # Prove turn 1 is awaiting reasoning, regardless of CI runner scheduling.
+        await provider.wait_started("turn_1")
         task2 = asyncio.create_task(
             controller.handle_turn(
                 session_id="sess_1",
@@ -131,8 +154,18 @@ def test_r02_overlapping_newer_turn_aborts_pending_turn(sample_evidence, empty_c
             )
         )
 
-        res2 = await task2
-        res1 = await task1
+        # Turn 2 has actually entered the controller and advanced the revision.
+        await provider.wait_started("turn_2")
+        if older_finishes_first:
+            provider.release("turn_1")
+            res1 = await asyncio.wait_for(task1, 5)
+            provider.release("turn_2")
+            res2 = await asyncio.wait_for(task2, 5)
+        else:
+            provider.release("turn_2")
+            res2 = await asyncio.wait_for(task2, 5)
+            provider.release("turn_1")
+            res1 = await asyncio.wait_for(task1, 5)
 
         assert res2.status == "completed"
         assert res2.authorized_command is not None
@@ -147,7 +180,7 @@ def test_r02_overlapping_newer_turn_aborts_pending_turn(sample_evidence, empty_c
 def test_r02_cancellation_during_turn_prevents_authorization(sample_evidence, empty_cart):
     """R2 (P0): Cancelling a turn while awaiting LLM must prevent command authorization."""
     async def _test():
-        provider = DelayedLlmProvider(delay_s=0.06)
+        provider = ControlledLlmProvider()
         controller = ShoppingController(llm_provider=provider)
 
         task1 = asyncio.create_task(
@@ -162,11 +195,12 @@ def test_r02_cancellation_during_turn_prevents_authorization(sample_evidence, em
             )
         )
 
-        await asyncio.sleep(0.02)
+        await provider.wait_started("turn_1")
         # User cancels turn
         controller.cancel_turn("sess_1", "turn_1")
+        provider.release("turn_1")
 
-        res1 = await task1
+        res1 = await asyncio.wait_for(task1, 5)
         assert res1.status in ("stale", "cancelled", "aborted")
         assert res1.authorized_command is None, "Cancelled turn authorized a cart mutation!"
 
@@ -176,7 +210,7 @@ def test_r02_cancellation_during_turn_prevents_authorization(sample_evidence, em
 def test_r02_page_epoch_change_during_turn_aborts_authorization(sample_evidence, empty_cart):
     """R2 (P0): Navigation / page epoch change during async work invalidates command authorization."""
     async def _test():
-        provider = DelayedLlmProvider(delay_s=0.06)
+        provider = ControlledLlmProvider()
         controller = ShoppingController(llm_provider=provider)
 
         task1 = asyncio.create_task(
@@ -191,11 +225,12 @@ def test_r02_page_epoch_change_during_turn_aborts_authorization(sample_evidence,
             )
         )
 
-        await asyncio.sleep(0.02)
+        await provider.wait_started("turn_1")
         # Shopper navigates to new page
         controller.update_page_epoch("sess_1", 2)
+        provider.release("turn_1")
 
-        res1 = await task1
+        res1 = await asyncio.wait_for(task1, 5)
         assert res1.status in ("stale", "cancelled", "aborted")
         assert res1.authorized_command is None, "Turn on stale page epoch authorized a command!"
 
